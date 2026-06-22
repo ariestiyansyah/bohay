@@ -1,0 +1,119 @@
+//! The tab bar: numbered button tabs with overflow scroll arrows and a `+`.
+
+use super::*;
+
+// ── tab bar ─────────────────────────────────────────────────────────────────
+
+/// (tab rects, close rects, left-scroll arrow, right-scroll arrow).
+pub(super) type TabHits = (
+    Vec<(usize, Rect)>,
+    Vec<(usize, Rect)>,
+    Option<Rect>,
+    Option<Rect>,
+);
+
+pub(super) fn draw_tabbar(f: &mut Frame, area: Rect, app: &App, t: &Theme) -> TabHits {
+    // Tab bar background = pane background (the sidebar is the lighter one).
+    f.render_widget(Block::new().style(Style::new().bg(t.mantle)), area);
+    let ws = app.ws();
+    let n = ws.tabs.len();
+    let active = ws.active_tab;
+    let mut tab_rects = Vec::new();
+    let mut close_rects = Vec::new();
+    let mut prev_rect = None;
+    let mut next_rect = None;
+
+    const CELL: u16 = 10; // wider, button-like tabs
+    const GAP: u16 = 1;
+    const ARROW: u16 = 2;
+    let plus_w: u16 = 3;
+    let unit = CELL + GAP;
+    let left = area.x + 1;
+    let right = area.right();
+    let total = right.saturating_sub(left);
+
+    // Do all tabs fit without scroll arrows (leaving room for the "+")?
+    let fit_plain = ((total + GAP).saturating_sub(plus_w) / unit) as usize;
+    let need_scroll = n > fit_plain;
+    let avail = if need_scroll {
+        total.saturating_sub(plus_w + 2 * ARROW)
+    } else {
+        total.saturating_sub(plus_w)
+    };
+    let max_vis = (((avail + GAP) / unit).max(1) as usize).min(n.max(1));
+    // Scroll the window so the active tab stays visible.
+    let mut scroll = (active + 1).saturating_sub(max_vis);
+    scroll = scroll.min(n.saturating_sub(max_vis));
+
+    let mut x = left;
+    // Left scroll arrow.
+    if need_scroll {
+        let style = if scroll > 0 {
+            Style::new().fg(t.accent).bold()
+        } else {
+            Style::new().fg(t.overlay0)
+        };
+        let r = Rect::new(x, area.y, ARROW, 1);
+        f.render_widget(Paragraph::new(Span::styled("‹ ", style)), r);
+        prev_rect = Some(r);
+        x += ARROW;
+    }
+
+    let end = (scroll + max_vis).min(n);
+    for i in scroll..end {
+        let num = i + 1;
+        if i == active {
+            let label = format!("{:^w$}", num, w = (CELL - 2) as usize);
+            let style = Style::new().fg(t.crust).bg(t.accent).bold();
+            f.render_widget(
+                Paragraph::new(Span::styled(label, style)),
+                Rect::new(x, area.y, CELL - 2, 1),
+            );
+            let close = Rect::new(x + CELL - 2, area.y, 2, 1);
+            f.render_widget(
+                Paragraph::new(Span::styled("✕ ", Style::new().fg(t.crust).bg(t.accent))),
+                close,
+            );
+            close_rects.push((i, close));
+        } else {
+            let label = format!("{:^w$}", num, w = CELL as usize);
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    label,
+                    // Inactive tab: same as the pane background.
+                    Style::new().fg(t.subtext0).bg(t.mantle),
+                )),
+                Rect::new(x, area.y, CELL, 1),
+            );
+        }
+        tab_rects.push((i, Rect::new(x, area.y, CELL, 1)));
+        x += unit;
+    }
+
+    // Right scroll arrow.
+    if need_scroll {
+        let style = if end < n {
+            Style::new().fg(t.accent).bold()
+        } else {
+            Style::new().fg(t.overlay0)
+        };
+        let r = Rect::new(x, area.y, ARROW, 1);
+        f.render_widget(Paragraph::new(Span::styled("› ", style)), r);
+        next_rect = Some(r);
+        x += ARROW;
+    }
+
+    // "+" new-tab button (clickable; index == tab count).
+    if x + plus_w <= right {
+        let rect = Rect::new(x, area.y, plus_w, 1);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " + ",
+                Style::new().fg(t.accent).bg(t.surface0).bold(),
+            )),
+            rect,
+        );
+        tab_rects.push((n, rect));
+    }
+    (tab_rects, close_rects, prev_rect, next_rect)
+}

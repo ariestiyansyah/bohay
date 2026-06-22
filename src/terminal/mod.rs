@@ -1,0 +1,5 @@
+//! Terminal layer: the PTY actor (`pty`) and the pure-Rust VT engine (`vt`).
+//! See docs/05-pty-and-terminal.md.
+
+pub mod pty;
+pub mod vt;

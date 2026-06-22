@@ -1,0 +1,520 @@
+//! bohay — terminal workspace manager for AI coding agents.
+//! A client/server terminal multiplexer with live agent detection.
+//! See docs/12-execution-plan.md.
+
+mod app;
+mod cli;
+mod detect;
+mod event;
+mod ids;
+mod integration;
+mod ipc;
+mod layout;
+mod persist;
+mod platform;
+mod terminal;
+mod ui;
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, Result};
+use ratatui::crossterm::event::{
+    read as read_event, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+    EnableMouseCapture, Event,
+};
+use ratatui::crossterm::execute;
+use ratatui::DefaultTerminal;
+
+use crate::app::App;
+use crate::event::AppEvent;
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("server") if args.get(2).map(String::as_str) == Some("stop") => return server_stop(),
+        Some("server") => return ipc::server::run(),
+        Some("client") => return ipc::client::run(&persist::client_socket_path()),
+        Some("integration") => std::process::exit(integration::run(&args)?),
+        Some("--local") => return run_local(),
+        Some(_) if cli::is_cli(&args) => {
+            let code = cli::run(&args)?;
+            std::process::exit(code);
+        }
+        _ => {}
+    }
+    // Default: attach to the session server, spawning it if needed.
+    autodetect_and_attach()
+}
+
+/// After `ratatui::init()` (which restores raw mode + alt-screen on panic), also
+/// disable mouse capture and bracketed paste on panic — otherwise a crash leaves
+/// the terminal in mouse-tracking mode, spewing `…;…M` sequences into the shell.
+pub(crate) fn install_tui_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(
+            std::io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste
+        );
+        prev(info);
+    }));
+}
+
+/// Run the app monolithically against the real terminal (dev/escape hatch).
+fn run_local() -> Result<()> {
+    let mut terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
+    install_tui_panic_hook();
+    let result = run(&mut terminal);
+    let _ = execute!(
+        std::io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste
+    );
+    ratatui::restore();
+    result
+}
+
+fn autodetect_and_attach() -> Result<()> {
+    let sock = persist::client_socket_path();
+    if !server_running(&sock) {
+        spawn_server()?;
+        wait_for_socket(&sock)?;
+    }
+    ipc::client::run(&sock)
+}
+
+fn server_running(sock: &Path) -> bool {
+    UnixStream::connect(sock).is_ok()
+}
+
+fn spawn_server() -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe()?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("server")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Detach into its own session so it survives the client exiting.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()?;
+    Ok(())
+}
+
+fn wait_for_socket(sock: &Path) -> Result<()> {
+    for _ in 0..100 {
+        if server_running(sock) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err(anyhow!("bohay server did not start in time"))
+}
+
+fn server_stop() -> Result<()> {
+    match UnixStream::connect(persist::socket_path()) {
+        Ok(mut s) => {
+            writeln!(s, r#"{{"id":"1","method":"server.stop","params":{{}}}}"#)?;
+            let mut line = String::new();
+            BufReader::new(s).read_line(&mut line)?;
+            print!("{line}");
+            Ok(())
+        }
+        Err(_) => {
+            println!("no bohay server running");
+            Ok(())
+        }
+    }
+}
+
+fn run(terminal: &mut DefaultTerminal) -> Result<()> {
+    let (tx, rx) = mpsc::channel::<AppEvent>();
+
+    {
+        let tx = tx.clone();
+        thread::spawn(move || input_loop(tx));
+    }
+
+    let size = terminal.size()?;
+    // Rough initial PTY size; the first draw resizes it to the exact pane rect.
+    let cols = size.width.saturating_sub(34).max(20);
+    let rows = size.height.saturating_sub(4).max(4);
+
+    // Advertise the socket before spawning panes so they inherit BOHAY_SOCKET_PATH.
+    let sock = persist::socket_path();
+    ipc::api::set_socket_path(sock.clone());
+    let mut app = App::restore_or_new(cols, rows, tx.clone())?;
+    app.set_color_mode(ipc::protocol::truecolor_supported());
+    let (api_tx, api_rx) = mpsc::channel::<ipc::api::ApiRequest>();
+    ipc::api::start_server(sock, api_tx, app.events.clone());
+
+    terminal.draw(|f| ui::render(f, &mut app))?;
+    let mut last_draw = Instant::now();
+    let mut last_save = Instant::now();
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(ev) => app.handle_event(ev),
+            Err(RecvTimeoutError::Timeout) => app.spinner = app.spinner.wrapping_add(1),
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        // Coalesce any queued events before drawing.
+        while let Ok(ev) = rx.try_recv() {
+            app.handle_event(ev);
+        }
+        // Service control-API requests.
+        while let Ok(req) = api_rx.try_recv() {
+            let resp = app.handle_api(&req);
+            let _ = req.reply.send(resp);
+        }
+        if app.should_quit || app.detach_requested {
+            break;
+        }
+
+        // Debounced session save.
+        if app.session_dirty && last_save.elapsed() > Duration::from_secs(2) {
+            persist::save(&app);
+            app.session_dirty = false;
+            last_save = Instant::now();
+        }
+
+        // Cap redraws at ~60fps.
+        let since = last_draw.elapsed();
+        if since < Duration::from_millis(16) {
+            thread::sleep(Duration::from_millis(16) - since);
+        }
+        app.detect_tick(Instant::now());
+        terminal.draw(|f| ui::render(f, &mut app))?;
+        last_draw = Instant::now();
+    }
+
+    persist::save(&app);
+    Ok(())
+}
+
+fn input_loop(tx: Sender<AppEvent>) {
+    loop {
+        let sent = match read_event() {
+            Ok(Event::Key(k)) => tx.send(AppEvent::Key(k)),
+            Ok(Event::Mouse(m)) => tx.send(AppEvent::Mouse(m)),
+            Ok(Event::Resize(w, h)) => tx.send(AppEvent::Resize(w, h)),
+            Ok(Event::Paste(s)) => tx.send(AppEvent::Paste(s)),
+            Ok(_) => Ok(()),
+            Err(_) => break,
+        };
+        if sent.is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Render one frame of the full UI to an off-screen buffer and assert the
+    /// chrome is present. Exercises App::new (real PTY spawn), the VtEngine, and
+    /// every draw path — catches panics and layout regressions without a tty.
+    #[test]
+    fn renders_chrome() {
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let mut app = App::new(80, 24, tx).expect("spawn pane");
+        // Give the shell a moment to emit its prompt into the grid.
+        thread::sleep(Duration::from_millis(150));
+
+        let backend = TestBackend::new(110, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for cell in buf.content() {
+            text.push_str(cell.symbol());
+        }
+
+        assert!(text.contains("bohay"), "brand missing");
+        assert!(text.contains("NODES"), "nodes header missing");
+        assert!(text.contains("AGENTS"), "agents header missing");
+        assert!(text.contains("tab"), "tab status missing");
+        assert!(text.contains("NORMAL"), "status mode missing");
+    }
+
+    /// Regression: a pane whose grid holds a control char must not panic
+    /// ratatui's `cell_width`. `git status` aligns with TABs, which alacritty
+    /// stores as a literal `\t` cell — `set_symbol("\t")` tripped the assert.
+    #[test]
+    fn renders_pane_with_tab() {
+        use crate::terminal::vt::VtEngine;
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let mut app = App::new(80, 24, tx).expect("spawn pane");
+        let id = app.layout().focus;
+        // Inject git-status-like output containing a TAB into the pane grid.
+        app.panes
+            .get(&id)
+            .unwrap()
+            .engine
+            .lock()
+            .unwrap()
+            .advance(b"\tmodified:\tsrc/main.rs\r\n");
+        let backend = TestBackend::new(110, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        // The bug was a panic here ("control character passed to cell_width").
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    }
+
+    /// End-to-end: start the socket server, run a mini app loop, and drive it
+    /// over the wire like an agent would.
+    #[test]
+    fn api_serves_requests() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let (api_tx, api_rx) = mpsc::channel::<ipc::api::ApiRequest>();
+        let path = std::env::temp_dir().join(format!("bohay-test-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        ipc::api::start_server(path.clone(), api_tx, app.events.clone());
+        thread::spawn(move || {
+            while let Ok(req) = api_rx.recv() {
+                let resp = app.handle_api(&req);
+                let _ = req.reply.send(resp);
+            }
+        });
+
+        let send = |req: &str| -> String {
+            let mut s = UnixStream::connect(&path).unwrap();
+            writeln!(s, "{req}").unwrap();
+            let mut line = String::new();
+            BufReader::new(s).read_line(&mut line).unwrap();
+            line
+        };
+
+        assert!(send(r#"{"id":"1","method":"ping","params":{}}"#).contains("pong"));
+        let list = send(r#"{"id":"2","method":"pane.list","params":{}}"#);
+        assert!(list.contains("pane_list"), "got: {list}");
+        let split = send(r#"{"id":"3","method":"pane.split","params":{}}"#);
+        assert!(split.contains("\"pane\""), "got: {split}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Render a representative frame (a simulated agent session in the pane) and
+    /// dump it to `preview.html` so the UI can be viewed in a browser with real
+    /// colors. A dev tool, not a CI check: `cargo test generate_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn generate_preview() {
+        use crate::ui::theme::State;
+        use ratatui::style::Modifier;
+
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = |c, m| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), m));
+
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let mut app = App::new(78, 30, tx).expect("spawn pane");
+
+        // Split into two panes: left runs a "claude" session, right is a shell.
+        let left = app.layout().focus;
+        app.handle_event(key(' ', KeyModifiers::CONTROL)); // prefix (Ctrl+Space)
+        app.handle_event(key('v', KeyModifiers::NONE)); // split → side by side
+        if let Some(p) = app.panes.get_mut(&left) {
+            p.command = "claude".to_string();
+        }
+
+        // A scripted "Claude Code" session so the left pane shows rich content.
+        let payload: &[u8] = b"\x1b[2J\x1b[H\r\n\
+\x1b[38;5;213m  \xe2\x9c\xbb Claude Code\x1b[0m  \x1b[38;5;245mopus-4.8\x1b[0m\r\n\r\n\
+\x1b[38;5;245m  \xe2\x94\x82\x1b[0m \x1b[38;5;252mrefactor the auth module to use the new token store\x1b[0m\r\n\r\n\
+\x1b[38;5;114m  \xe2\x97\x8f\x1b[0m \x1b[38;5;252mRead\x1b[0m  \x1b[38;5;111msrc/auth/mod.rs\x1b[0m \x1b[38;5;245m(214 lines)\x1b[0m\r\n\
+\x1b[38;5;114m  \xe2\x97\x8f\x1b[0m \x1b[38;5;252mEdit\x1b[0m  \x1b[38;5;111msrc/auth/token.rs\x1b[0m   \x1b[38;5;114m+42\x1b[0m \x1b[38;5;210m-17\x1b[0m\r\n\
+\x1b[38;5;114m  \xe2\x97\x8f\x1b[0m \x1b[38;5;252mEdit\x1b[0m  \x1b[38;5;111msrc/auth/session.rs\x1b[0m \x1b[38;5;114m+8\x1b[0m  \x1b[38;5;210m-3\x1b[0m\r\n\r\n\
+\x1b[38;5;221m  \xe2\x97\x8f\x1b[0m \x1b[38;5;252mRunning\x1b[0m \x1b[38;5;245mcargo test auth\x1b[0m\r\n\
+\x1b[38;5;245m    test auth::token::roundtrip ... \x1b[0m\x1b[38;5;114mok\x1b[0m\r\n\
+\x1b[38;5;245m    test auth::session::expiry  ... \x1b[0m\x1b[38;5;114mok\x1b[0m\r\n\r\n\
+\x1b[38;5;245m  \xe2\x94\x94\xe2\x94\x80\x1b[0m \x1b[38;5;252mAll tests passing. Ready for review.\x1b[0m\r\n\r\n\
+\x1b[38;5;240m  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\x1b[0m\r\n\
+\x1b[38;5;245m  >\x1b[0m \x1b[7m \x1b[0m\r\n";
+        if let Some(p) = app.panes.get(&left) {
+            if let Ok(mut e) = p.engine.lock() {
+                e.advance(payload);
+            }
+        }
+
+        // Right pane: a shell prompt so it isn't blank in the still image.
+        let right = app.layout().focus;
+        let prompt: &[u8] = b"\x1b[2J\x1b[H\r\n  \x1b[38;5;108mbohay\x1b[0m \x1b[38;5;245m~/skyrizz/bohay\x1b[0m\r\n  \x1b[38;5;215m\xe2\x9d\xaf\x1b[0m \x1b[7m \x1b[0m\x1b[0m";
+        if let Some(p) = app.panes.get(&right) {
+            if let Ok(mut e) = p.engine.lock() {
+                e.advance(prompt);
+            }
+        }
+
+        // Force representative states for the still image.
+        if let Some(s) = app.status.get_mut(&left) {
+            s.state = State::Working;
+            s.agent = "claude".to_string();
+        }
+        if let Some(s) = app.status.get_mut(&right) {
+            s.state = State::Idle;
+            s.agent = "zsh".to_string(); // a shell — filtered out of AGENTS
+        }
+        // Show the node with its git branch.
+        app.workspaces[0].branch = Some("main".to_string());
+
+        let backend = TestBackend::new(110, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        let (w, h) = (buf.area.width, buf.area.height);
+        let mut body = String::new();
+        for y in 0..h {
+            for x in 0..w {
+                let cell = &buf[(x, y)];
+                let rev = cell.modifier.contains(Modifier::REVERSED);
+                let mut fg = resolve(cell.fg, (0xcd, 0xd6, 0xf4));
+                let mut bg = resolve(cell.bg, (0x1e, 0x1e, 0x2e));
+                if rev {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                if cell.modifier.contains(Modifier::DIM) {
+                    fg = dim(fg);
+                }
+                let mut style = format!(
+                    "color:#{:02x}{:02x}{:02x};background:#{:02x}{:02x}{:02x}",
+                    fg.0, fg.1, fg.2, bg.0, bg.1, bg.2
+                );
+                if cell.modifier.contains(Modifier::BOLD) {
+                    style.push_str(";font-weight:700");
+                }
+                if cell.modifier.contains(Modifier::ITALIC) {
+                    style.push_str(";font-style:italic");
+                }
+                let sym = match cell.symbol() {
+                    "" => " ",
+                    s => s,
+                };
+                let esc = sym
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                body.push_str(&format!("<span style=\"{style}\">{esc}</span>"));
+            }
+            body.push('\n');
+        }
+
+        let html = format!(
+            "<!doctype html><meta charset=utf-8><title>bohay preview</title>\
+<style>body{{background:#11111b;margin:0;padding:40px;display:flex;justify-content:center}}\
+pre{{font:14px/1.3 'SF Mono',Menlo,Consolas,monospace;background:#1e1e2e;padding:0;\
+border-radius:12px;overflow:hidden;box-shadow:0 16px 50px rgba(0,0,0,.6)}}\
+span{{white-space:pre}}</style><pre>{body}</pre>"
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/preview.html");
+        std::fs::write(path, html).unwrap();
+        eprintln!("wrote {path}");
+
+        // ANSI truecolor version, viewable with `cat preview.ans`.
+        let mut ans = String::new();
+        for y in 0..h {
+            for x in 0..w {
+                let cell = &buf[(x, y)];
+                let fg = resolve(cell.fg, (0xcd, 0xd6, 0xf4));
+                let bg = resolve(cell.bg, (0x1e, 0x1e, 0x2e));
+                ans.push_str(&format!(
+                    "\x1b[38;2;{};{};{};48;2;{};{};{}m",
+                    fg.0, fg.1, fg.2, bg.0, bg.1, bg.2
+                ));
+                if cell.modifier.contains(Modifier::BOLD) {
+                    ans.push_str("\x1b[1m");
+                }
+                ans.push_str(match cell.symbol() {
+                    "" => " ",
+                    s => s,
+                });
+                ans.push_str("\x1b[0m");
+            }
+            ans.push('\n');
+        }
+        let apath = concat!(env!("CARGO_MANIFEST_DIR"), "/preview.ans");
+        std::fs::write(apath, ans).unwrap();
+        eprintln!("wrote {apath}");
+    }
+
+    fn resolve(c: ratatui::style::Color, reset: (u8, u8, u8)) -> (u8, u8, u8) {
+        use ratatui::style::Color::*;
+        match c {
+            Reset => reset,
+            Rgb(r, g, b) => (r, g, b),
+            Indexed(i) => xterm(i),
+            Black => xterm(0),
+            Red => xterm(1),
+            Green => xterm(2),
+            Yellow => xterm(3),
+            Blue => xterm(4),
+            Magenta => xterm(5),
+            Cyan => xterm(6),
+            Gray => xterm(7),
+            DarkGray => xterm(8),
+            LightRed => xterm(9),
+            LightGreen => xterm(10),
+            LightYellow => xterm(11),
+            LightBlue => xterm(12),
+            LightMagenta => xterm(13),
+            LightCyan => xterm(14),
+            White => xterm(15),
+        }
+    }
+
+    fn dim(c: (u8, u8, u8)) -> (u8, u8, u8) {
+        let f = |v: u8| (v as f32 * 0.6) as u8;
+        (f(c.0), f(c.1), f(c.2))
+    }
+
+    fn xterm(i: u8) -> (u8, u8, u8) {
+        // 0–15: catppuccin mocha ANSI; 16–231: 6×6×6 cube; 232–255: grayscale.
+        const ANSI: [(u8, u8, u8); 16] = [
+            (0x45, 0x47, 0x5a),
+            (0xf3, 0x8b, 0xa8),
+            (0xa6, 0xe3, 0xa1),
+            (0xf9, 0xe2, 0xaf),
+            (0x89, 0xb4, 0xfa),
+            (0xf5, 0xc2, 0xe7),
+            (0x94, 0xe2, 0xd5),
+            (0xba, 0xc2, 0xde),
+            (0x58, 0x5b, 0x70),
+            (0xf3, 0x8b, 0xa8),
+            (0xa6, 0xe3, 0xa1),
+            (0xf9, 0xe2, 0xaf),
+            (0x89, 0xb4, 0xfa),
+            (0xf5, 0xc2, 0xe7),
+            (0x94, 0xe2, 0xd5),
+            (0xa6, 0xad, 0xc8),
+        ];
+        if i < 16 {
+            ANSI[i as usize]
+        } else if i < 232 {
+            let i = i - 16;
+            let c = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
+            (c(i / 36), c((i / 6) % 6), c(i % 6))
+        } else {
+            let v = 8 + 10 * (i - 232);
+            (v, v, v)
+        }
+    }
+}
