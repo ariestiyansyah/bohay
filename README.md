@@ -95,6 +95,8 @@ nodes (spaces):   node list | node new | node focus <i> | node close [<i>]
 tabs:             tab list  | tab new  | tab focus <n>   | tab close [<n>]
 panes / agents:   pane list | pane split [<id>] [--down] | pane focus <id>
                   pane run/send/read/close [<id>] | agent list
+sessions:         agent sessions | agent resume <id>     # resumable agent sessions
+appearance:       ui sidebar --width <n> | ui sidebar --hide|--show
 events:           events                  # stream status changes
 server:           server stop             # stop the server and all panes
 ```
@@ -102,17 +104,48 @@ server:           server stop             # stop the server and all panes
 When a command runs inside a bohay pane, the target pane defaults to that pane (via the
 injected `$BOHAY_PANE_ID`), so `bohay pane split` "just works" without an explicit id.
 
-## Agent integration
+## Agent session resume
 
-Agents that expose a session id can report it to bohay so their native session is **resumed**
-automatically after a restart (e.g. `claude --resume <id>`). Install the hook once:
+When you reopen bohay, it **resumes each agent's native session** where you left off — with
+**zero configuration**. bohay discovers the latest session id straight from the agent's own
+on-disk store, keyed by the pane's working directory, and runs the agent's resume command
+when restoring the pane:
+
+| Agent | Discovered from | Resumed with |
+|-------|-----------------|--------------|
+| **Claude Code** | `~/.claude/projects/<cwd>/<id>.jsonl` | `claude --resume <id>` |
+| **GitHub Copilot** | `~/.copilot/session-state/<id>/workspace.yaml` | `copilot --resume=<id>` |
+
+The session id is captured into `~/.bohay/session.json` whenever an agent is active (and on
+exit), so it survives a clean quit, a detached server, or a crash.
+
+### Resume from the sidebar
+
+The **AGENTS** panel in the sidebar lists not just your live agents but also recent
+**resumable sessions** discovered on disk (one per project, newest first). Click one to
+reopen it — bohay spawns a pane in that project's node (creating the node if needed) and runs
+the agent's resume command. Hover a resume row to reveal a **✕** that removes it from the list
+(it stays hidden but the actual session on disk is untouched). Both sidebar lists (NODES and
+AGENTS) **scroll** with the mouse wheel when they overflow. The list is also scriptable:
+
+```bash
+bohay agent sessions          # list resumable sessions (agent, id, cwd)
+bohay agent resume <id>       # reopen a session into a pane
+```
+
+### Optional: precise per-pane sessions
+
+The zero-config discovery resumes the *latest* session for a directory, which is what you
+want in the common one-agent-per-project case. If you run several agents in the same
+directory and want each pane to resume its *exact* session, install the hook:
 
 ```bash
 bohay integration install claude
 ```
 
-This drops a `SessionStart` hook into the agent's config; it reports the session id over the
-socket using the `BOHAY_*` environment injected into every pane.
+This drops a `SessionStart` hook into Claude Code's config that reports the precise session id
+over the socket (using the `BOHAY_*` environment injected into every pane). A reported session
+always takes precedence over disk discovery.
 
 ## Configuration
 
@@ -124,6 +157,10 @@ State lives in **`~/.bohay/`** (debug builds use `~/.bohay-dev/`). Override the 
 | `~/.bohay/session.json` | Saved workspaces / tabs / pane tree (restored on launch) |
 | `~/.bohay/bohay.sock` | JSON control-API socket (the CLI + agents) |
 | `~/.bohay/bohay-client.sock` | Binary render-frame socket (client ↔ server) |
+
+**Appearance.** The sidebar width is adjustable — `bohay ui sidebar --width <n>` (18–44
+columns), or toggle it with `bohay ui sidebar --hide|--show`. A full settings menu (theme,
+layout, notifications, integrations) is planned; see `docs/15-settings-menu.md`.
 
 ## Architecture
 
@@ -150,6 +187,7 @@ src/
   ipc/               Unix-socket layer: control api, frame protocol, client, server
   layout.rs          BSP tiling tree
   detect.rs          agent detection (screen + activity based)
+  agent.rs           agent native-session discovery & resume
   persist.rs         session snapshot / restore
   platform.rs        OS-specific bits (process cwd)
   integration.rs     agent integration hooks

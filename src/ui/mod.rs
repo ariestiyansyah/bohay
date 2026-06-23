@@ -29,8 +29,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let [main, status] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
     let (sidebar, content) = if app.sidebar_visible {
-        let sw = 30u16.min(main.width.saturating_sub(24));
-        if sw >= 18 {
+        // Honor the configured width, but never starve the pane area.
+        let sw = app.sidebar_width.min(main.width.saturating_sub(24));
+        if sw >= crate::app::SIDEBAR_WIDTH_MIN {
             let [s, c] =
                 Layout::horizontal([Constraint::Length(sw), Constraint::Min(0)]).areas(main);
             (Some(s), c)
@@ -66,11 +67,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
     }
 
-    let (ws_rects, agent_rects, new_ws_rect) = if let Some(s) = sidebar {
-        sidebar::draw_sidebar(f, s, app, &t)
-    } else {
-        (Vec::new(), Vec::new(), None)
-    };
+    let (ws_rects, agent_rects, session_rects, session_del_rects, new_ws_rect) =
+        if let Some(s) = sidebar {
+            sidebar::draw_sidebar(f, s, app, &t)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), None)
+        };
     let (tab_rects, tab_close_rects, tab_prev, tab_next) = tabbar::draw_tabbar(f, tabbar, app, &t);
     // Behind the panes, use the (dark) pane background.
     f.render_widget(Block::new().style(Style::new().bg(t.mantle)), pane_area);
@@ -102,6 +104,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.tab_next_rect = tab_next;
     app.ws_rects = ws_rects;
     app.agent_rects = agent_rects;
+    app.session_rects = session_rects;
+    app.session_del_rects = session_del_rects;
     app.new_ws_rect = new_ws_rect;
 }
 

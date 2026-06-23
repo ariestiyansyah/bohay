@@ -91,9 +91,16 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
                 .filter_map(|id| {
                     app.panes.get(&id).map(|p| {
                         let agent_session = app.status.get(&id).and_then(|s| {
+                            // A hook-reported session is precise; otherwise
+                            // discover the agent's latest session from its
+                            // on-disk store, keyed by this pane's cwd.
                             s.agent_session
                                 .as_ref()
                                 .map(|a| (a.agent.clone(), a.session_id.clone()))
+                                .or_else(|| {
+                                    crate::agent::latest_session(&s.agent, &p.cwd)
+                                        .map(|sid| (s.agent.clone(), sid))
+                                })
                         });
                         // Capture the visible screen (cap size to keep saves light).
                         let screen = p

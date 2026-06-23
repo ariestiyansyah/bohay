@@ -2,6 +2,7 @@
 //! A client/server terminal multiplexer with live agent detection.
 //! See docs/12-execution-plan.md.
 
+mod agent;
 mod app;
 mod cli;
 mod detect;

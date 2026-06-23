@@ -27,17 +27,36 @@ impl App {
 
     fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        // Track the cursor for hover affordances (e.g. the session delete ✕).
+        self.hover = Some((m.column, m.row));
         let scroll: i32 = match m.kind {
             MouseEventKind::Down(MouseButton::Left) => 0,
             MouseEventKind::ScrollUp => -3,
             MouseEventKind::ScrollDown => 3,
-            _ => return,
+            _ => return, // motion / release: hover updated, nothing else to do
         };
         let (c, r) = (m.column, m.row);
         let hit = |rect: Rect| c >= rect.x && c < rect.right() && r >= rect.y && r < rect.bottom();
 
         if scroll != 0 {
-            // Forward scroll as arrow keys to the pane under the cursor.
+            // Wheel over a sidebar list scrolls it one item per notch (the next
+            // render clamps the offset to the list length).
+            let step = |off: usize| {
+                if scroll < 0 {
+                    off.saturating_sub(1)
+                } else {
+                    off + 1
+                }
+            };
+            if hit(self.nodes_area) {
+                self.nodes_scroll = step(self.nodes_scroll);
+                return;
+            }
+            if hit(self.agents_area) {
+                self.agents_scroll = step(self.agents_scroll);
+                return;
+            }
+            // Otherwise forward scroll as arrow keys to the pane under the cursor.
             if let Some((id, _)) = self.pane_rects.iter().find(|(_, rect)| hit(*rect)) {
                 if let Some(pane) = self.panes.get(id) {
                     let seq: &[u8] = if scroll < 0 { b"\x1b[A" } else { b"\x1b[B" };
@@ -92,6 +111,19 @@ impl App {
         if let Some((id, _)) = self.agent_rects.iter().find(|(_, rect)| hit(*rect)) {
             let id = *id;
             self.focus_pane_global(id);
+            return;
+        }
+        // The hovered row's ✕ removes the session from the list (checked first,
+        // since it sits on top of the row).
+        if let Some((i, _)) = self.session_del_rects.iter().find(|(_, rect)| hit(*rect)) {
+            let i = *i;
+            self.dismiss_session(i);
+            return;
+        }
+        // Clicking a resumable session row reopens it into a pane.
+        if let Some((i, _)) = self.session_rects.iter().find(|(_, rect)| hit(*rect)) {
+            let i = *i;
+            self.resume_session(i);
             return;
         }
         if let Some((i, _)) = self.ws_rects.iter().find(|(_, rect)| hit(*rect)) {

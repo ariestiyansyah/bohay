@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 pub fn is_cli(args: &[String]) -> bool {
     matches!(
         args.get(1).map(String::as_str),
-        Some("ping" | "pane" | "node" | "tab" | "agent" | "events" | "help")
+        Some("ping" | "pane" | "node" | "tab" | "agent" | "ui" | "events" | "help")
     )
 }
 
@@ -46,6 +46,12 @@ panes / agents:
   pane read [<id>]           print a pane's recent output
   pane close [<id>]          close a pane
   agent list                 list every agent across all nodes/tabs
+  agent sessions             list resumable sessions found on disk
+  agent resume <id>          reopen a resumable session into a pane
+
+appearance:
+  ui sidebar --width <n>     set the sidebar width (columns)
+  ui sidebar --hide|--show   toggle the sidebar
 
 events:
   events                     stream live status changes
@@ -147,7 +153,22 @@ fn parse(args: &[String]) -> Result<(String, Value)> {
     Ok(match (noun, verb) {
         ("ping", _) => ("ping".into(), json!({})),
         ("events", _) => ("events.subscribe".into(), json!({})),
+        ("agent", "sessions") => ("agent.sessions".into(), json!({})),
+        ("agent", "resume") => ("agent.resume".into(), one("session_id", arg0())),
         ("agent", _) => ("agent.list".into(), json!({})),
+
+        ("ui", "sidebar") => {
+            let mut obj = serde_json::Map::new();
+            if let Some(w) = flag(args, "--width") {
+                obj.insert("width".to_string(), json!(w));
+            }
+            if args.iter().any(|a| a == "--hide") {
+                obj.insert("visible".to_string(), json!(false));
+            } else if args.iter().any(|a| a == "--show") {
+                obj.insert("visible".to_string(), json!(true));
+            }
+            ("ui.sidebar".into(), Value::Object(obj))
+        }
 
         ("node", "new") => ("node.new".into(), json!({})),
         ("node", "focus") => ("node.focus".into(), one("node", arg0())),

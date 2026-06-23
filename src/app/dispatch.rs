@@ -11,9 +11,17 @@ impl App {
             self.last_cwd_at = now;
             self.refresh_cwds();
         }
+        // Rescan the agents' session stores a little less often (filesystem work).
+        if now.duration_since(self.last_sessions_at) >= Duration::from_secs(4) {
+            self.last_sessions_at = now;
+            self.refresh_resumable();
+        }
         let focus = self.layout().focus;
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
         let mut changes: Vec<(PaneId, State, String)> = Vec::new();
+        // A newly-detected resumable agent means there's a session worth saving;
+        // flag a snapshot so it's captured even if we later crash (no clean exit).
+        let mut agent_appeared = false;
         for id in ids {
             let (title, bottom, base) = match self.panes.get(&id) {
                 Some(p) => {
@@ -48,11 +56,18 @@ impl App {
                 } else {
                     det.state
                 };
+                let agent_changed = s.agent != det.agent;
                 s.agent = det.agent;
+                if agent_changed && crate::agent::is_resumable(&s.agent) {
+                    agent_appeared = true;
+                }
                 if s.state != old {
                     changes.push((id, s.state, s.agent.clone()));
                 }
             }
+        }
+        if agent_appeared {
+            self.session_dirty = true;
         }
         for (id, st, agent) in changes {
             api::publish(
@@ -260,6 +275,51 @@ impl App {
                     }
                 }
                 Ok(json!({"type":"agent_list","agents":arr}))
+            }
+            // Resumable sessions discovered on disk (the AGENTS sidebar list).
+            "agent.sessions" => {
+                self.refresh_resumable();
+                let arr: Vec<Value> = self
+                    .resumable
+                    .iter()
+                    .map(|s| {
+                        json!({
+                            "agent": s.agent,
+                            "session_id": s.session_id,
+                            "cwd": s.cwd.display().to_string(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({"type":"session_list","sessions":arr}))
+            }
+            "agent.resume" => {
+                self.refresh_resumable();
+                let sid = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                let idx = self.resumable.iter().position(|s| s.session_id == sid);
+                match idx {
+                    Some(i) => {
+                        self.resume_session(i);
+                        Ok(json!({"type":"ok"}))
+                    }
+                    None => Err((
+                        "not_found".to_string(),
+                        "no resumable session with that id".to_string(),
+                    )),
+                }
+            }
+            // ── ui / appearance ──
+            "ui.sidebar" => {
+                if let Some(w) = param_usize(p, "width") {
+                    self.set_sidebar_width(w as u16);
+                }
+                if let Some(v) = p.get("visible").and_then(|v| v.as_bool()) {
+                    self.sidebar_visible = v;
+                }
+                Ok(json!({
+                    "type": "ok",
+                    "width": self.sidebar_width,
+                    "visible": self.sidebar_visible,
+                }))
             }
             other => Err((
                 "invalid_request".to_string(),

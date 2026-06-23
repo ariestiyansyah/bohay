@@ -2,7 +2,7 @@
 //! agent detection. Panes are stored flat and referenced by id from the tree
 //! (docs/04). Prefix-key driven.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -25,6 +25,13 @@ mod dispatch;
 mod input;
 
 const ACTIVITY_WINDOW: Duration = Duration::from_millis(700);
+
+/// Sidebar width in columns. `sidebar_width` is adjustable at runtime (and will
+/// be exposed in settings); these bound it. Colors are the `Theme` (also to be
+/// settings-customizable — see docs/15).
+pub const SIDEBAR_WIDTH_DEFAULT: u16 = 26;
+pub const SIDEBAR_WIDTH_MIN: u16 = 18;
+pub const SIDEBAR_WIDTH_MAX: u16 = 44;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -78,27 +85,6 @@ impl PaneStatus {
     }
 }
 
-/// The shell command that resumes an agent's native session, if supported.
-/// Returns `None` for unknown agents or unsafe ids.
-pub fn resume_command(agent: &str, session_id: &str) -> Option<String> {
-    let safe = !session_id.is_empty()
-        && session_id.len() <= 256
-        && session_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/'));
-    if !safe {
-        return None;
-    }
-    let q = format!("'{}'", session_id.replace('\'', "'\\''"));
-    Some(match agent {
-        "claude" => format!("claude --resume {q}\r"),
-        "codex" => format!("codex resume {q}\r"),
-        "copilot" => format!("copilot --resume={q}\r"),
-        "cursor" | "cursor-agent" => format!("cursor-agent --resume {q}\r"),
-        _ => return None,
-    })
-}
-
 pub struct App {
     pub panes: HashMap<PaneId, Pane>,
     pub status: HashMap<PaneId, PaneStatus>,
@@ -107,6 +93,8 @@ pub struct App {
     pub theme: Theme,
     pub mode: Mode,
     pub sidebar_visible: bool,
+    /// Sidebar width in columns (customizable; see `set_sidebar_width`).
+    pub sidebar_width: u16,
     pub zoomed: bool,
     pub should_quit: bool,
     pub spinner: u64,
@@ -121,6 +109,22 @@ pub struct App {
     pub downsample: bool,
     /// Throttle for refreshing pane working directories.
     last_cwd_at: Instant,
+    /// Resumable agent sessions discovered on disk (for the AGENTS sidebar).
+    pub resumable: Vec<crate::agent::SessionInfo>,
+    /// Session ids the user removed from the sidebar list (hidden, not deleted).
+    pub dismissed_sessions: HashSet<String>,
+    /// Throttle for rescanning the agents' on-disk session stores.
+    last_sessions_at: Instant,
+    /// Scroll offsets + scrollable regions for the two sidebar lists, so long
+    /// NODES / AGENTS lists can be wheeled through.
+    pub nodes_scroll: usize,
+    pub agents_scroll: usize,
+    pub nodes_area: Rect,
+    pub agents_area: Rect,
+    /// Last active node shown, to auto-reveal it on a programmatic change.
+    pub last_active_ws_shown: usize,
+    /// Last mouse position, for hover affordances (the session delete ✕).
+    pub hover: Option<(u16, u16)>,
     app_tx: Sender<AppEvent>,
     pub last_pane_area: Rect,
     // Hit-test geometry from the last render, for mouse clicks.
@@ -129,6 +133,10 @@ pub struct App {
     pub tab_close_rects: Vec<(usize, Rect)>,
     pub ws_rects: Vec<(usize, Rect)>,
     pub agent_rects: Vec<(PaneId, Rect)>,
+    /// Resumable-session rows in the sidebar (index into `resumable`).
+    pub session_rects: Vec<(usize, Rect)>,
+    /// The ✕ delete buttons on hovered resumable rows (index into `resumable`).
+    pub session_del_rects: Vec<(usize, Rect)>,
     pub new_ws_rect: Option<Rect>,
     /// Tab-bar scroll arrows (when tabs overflow), for mouse hit-testing.
     pub tab_prev_rect: Option<Rect>,
@@ -166,6 +174,7 @@ impl App {
             theme: Theme::noir(),
             mode: Mode::Normal,
             sidebar_visible: true,
+            sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             zoomed: false,
             should_quit: false,
             spinner: 0,
@@ -175,12 +184,23 @@ impl App {
             detach_requested: false,
             downsample: false,
             last_cwd_at: Instant::now(),
+            resumable: Vec::new(),
+            dismissed_sessions: HashSet::new(),
+            last_sessions_at: Instant::now(),
+            nodes_scroll: 0,
+            agents_scroll: 0,
+            nodes_area: Rect::ZERO,
+            agents_area: Rect::ZERO,
+            last_active_ws_shown: 0,
+            hover: None,
             app_tx,
             last_pane_area: Rect::ZERO,
             pane_rects: Vec::new(),
             tab_rects: Vec::new(),
             ws_rects: Vec::new(),
             agent_rects: Vec::new(),
+            session_rects: Vec::new(),
+            session_del_rects: Vec::new(),
             tab_close_rects: Vec::new(),
             new_ws_rect: None,
             tab_prev_rect: None,
@@ -220,14 +240,16 @@ impl App {
                     .ok()?;
                     let cmd = pane.command.clone();
                     let mut st = PaneStatus::new(cmd);
-                    // Resume a native agent session if one was saved.
+                    // Resume the native agent session captured at save time (a
+                    // precise hook report, or one discovered from the agent's
+                    // on-disk store keyed by cwd — see `persist::snapshot`).
                     if let Some((agent, sid)) = &ps.agent_session {
                         st.agent = agent.clone();
                         st.agent_session = Some(AgentSession {
                             agent: agent.clone(),
                             session_id: sid.clone(),
                         });
-                        if let Some(resume) = resume_command(agent, sid) {
+                        if let Some(resume) = crate::agent::resume_command(agent, sid) {
                             pane.send(resume.as_bytes());
                         }
                     }
@@ -262,6 +284,7 @@ impl App {
             theme: Theme::noir(),
             mode: Mode::Normal,
             sidebar_visible: true,
+            sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             zoomed: false,
             should_quit: false,
             spinner: 0,
@@ -271,12 +294,23 @@ impl App {
             detach_requested: false,
             downsample: false,
             last_cwd_at: Instant::now(),
+            resumable: Vec::new(),
+            dismissed_sessions: HashSet::new(),
+            last_sessions_at: Instant::now(),
+            nodes_scroll: 0,
+            agents_scroll: 0,
+            nodes_area: Rect::ZERO,
+            agents_area: Rect::ZERO,
+            last_active_ws_shown: 0,
+            hover: None,
             app_tx,
             last_pane_area: Rect::ZERO,
             pane_rects: Vec::new(),
             tab_rects: Vec::new(),
             ws_rects: Vec::new(),
             agent_rects: Vec::new(),
+            session_rects: Vec::new(),
+            session_del_rects: Vec::new(),
             tab_close_rects: Vec::new(),
             new_ws_rect: None,
             tab_prev_rect: None,
@@ -291,6 +325,12 @@ impl App {
             self.downsample = true;
             self.theme = self.theme.to_256();
         }
+    }
+
+    /// Set the sidebar width, clamped to the supported range. The entry point for
+    /// settings / a future resize control.
+    pub fn set_sidebar_width(&mut self, cols: u16) {
+        self.sidebar_width = cols.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
     }
 
     // ── accessors ───────────────────────────────────────────────────────────
@@ -424,6 +464,83 @@ impl App {
                 ws.cwd = cwd;
             }
         }
+    }
+
+    /// Rescan the agents' on-disk session stores for sessions you can reopen,
+    /// dropping any whose project already has that agent running live, and any
+    /// the user has dismissed from the list.
+    fn refresh_resumable(&mut self) {
+        let open: HashSet<(String, PathBuf)> = self
+            .status
+            .iter()
+            .filter(|(_, s)| crate::agent::is_resumable(&s.agent))
+            .filter_map(|(id, s)| self.panes.get(id).map(|p| (s.agent.clone(), p.cwd.clone())))
+            .collect();
+        let dismissed = &self.dismissed_sessions;
+        self.resumable = crate::agent::recent_sessions(12)
+            .into_iter()
+            .filter(|s| {
+                !dismissed.contains(&s.session_id)
+                    && !open.contains(&(s.agent.clone(), s.cwd.clone()))
+            })
+            .collect();
+    }
+
+    /// Remove a resumable session from the sidebar list. Hides it for the rest of
+    /// the run (so the periodic rescan doesn't bring it back) — it does NOT touch
+    /// the agent's stored session on disk.
+    pub fn dismiss_session(&mut self, idx: usize) {
+        if idx >= self.resumable.len() {
+            return;
+        }
+        let s = self.resumable.remove(idx);
+        self.dismissed_sessions.insert(s.session_id);
+    }
+
+    /// Reopen a resumable session (from the AGENTS sidebar): spawn a pane in the
+    /// session's directory — reusing its node if one exists, else a new node —
+    /// and run the agent's resume command.
+    pub fn resume_session(&mut self, idx: usize) {
+        let Some(s) = self.resumable.get(idx).cloned() else {
+            return;
+        };
+        let Some(resume) = crate::agent::resume_command(&s.agent, &s.session_id) else {
+            return;
+        };
+        let Some(id) = self.spawn_into(s.cwd.clone()) else {
+            return;
+        };
+        let tab = Tab {
+            layout: TileLayout::new(id),
+        };
+        if let Some(wi) = self.workspaces.iter().position(|w| w.cwd == s.cwd) {
+            self.active_ws = wi;
+            let ws = &mut self.workspaces[wi];
+            ws.tabs.push(tab);
+            ws.active_tab = ws.tabs.len() - 1;
+        } else {
+            let branch = git_branch(&s.cwd);
+            self.workspaces.push(Workspace {
+                name: ws_name(&s.cwd),
+                cwd: s.cwd.clone(),
+                branch,
+                tabs: vec![tab],
+                active_tab: 0,
+            });
+            self.active_ws = self.workspaces.len() - 1;
+        }
+        if let Some(st) = self.status.get_mut(&id) {
+            st.agent = s.agent.clone();
+            st.agent_session = Some(AgentSession {
+                agent: s.agent.clone(),
+                session_id: s.session_id.clone(),
+            });
+        }
+        if let Some(p) = self.panes.get(&id) {
+            p.send(resume.as_bytes());
+        }
+        self.mode = Mode::Normal;
+        self.resumable.retain(|r| r.session_id != s.session_id);
     }
 
     /// Focus a pane anywhere (used when clicking an agent in the global list).
@@ -754,19 +871,6 @@ mod tests {
     }
 
     #[test]
-    fn resume_commands() {
-        assert!(resume_command("claude", "abc")
-            .unwrap()
-            .contains("claude --resume"));
-        assert!(resume_command("codex", "x9")
-            .unwrap()
-            .contains("codex resume"));
-        assert!(resume_command("unknown", "x").is_none());
-        assert!(resume_command("claude", "").is_none()); // empty
-        assert!(resume_command("claude", "a b").is_none()); // unsafe char
-    }
-
-    #[test]
     fn agent_session_persists_and_resumes() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(80, 24, tx).unwrap();
@@ -795,6 +899,134 @@ mod tests {
             .unwrap();
         assert_eq!(sess.agent, "claude");
         assert_eq!(sess.session_id, "abc-123");
+    }
+
+    #[test]
+    fn resume_session_opens_pane() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let before_panes = app.panes.len();
+        let before_ws = app.workspaces.len();
+
+        app.resumable = vec![crate::agent::SessionInfo {
+            agent: "claude".into(),
+            session_id: "abc".into(),
+            cwd: std::env::temp_dir().join("bohay-resume-test"),
+            updated: std::time::SystemTime::now(),
+        }];
+        app.resume_session(0);
+
+        assert_eq!(app.panes.len(), before_panes + 1, "a pane was spawned");
+        assert_eq!(
+            app.workspaces.len(),
+            before_ws + 1,
+            "a new node for the cwd"
+        );
+        let s = app.status.get(&app.layout().focus).unwrap();
+        assert_eq!(s.agent, "claude");
+        assert_eq!(s.agent_session.as_ref().unwrap().session_id, "abc");
+        assert!(app.resumable.is_empty(), "session dropped from the list");
+    }
+
+    #[test]
+    fn sidebar_lists_scroll() {
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        for _ in 0..9 {
+            app.new_workspace(); // 10 nodes — more than fit in a short sidebar
+        }
+        app.active_ws = 0;
+        app.last_active_ws_shown = 0;
+
+        let mut term = Terminal::new(TestBackend::new(80, 18)).unwrap();
+        let mut draw = |app: &mut App| {
+            term.draw(|f| crate::ui::render(f, app))
+                .map(|_| ())
+                .unwrap()
+        };
+        draw(&mut app);
+        assert!(app.nodes_area.height > 0, "the nodes list was measured");
+        assert_eq!(app.nodes_scroll, 0);
+
+        let na = app.nodes_area;
+        let mut wheel = |app: &mut App, kind| {
+            app.handle_event(AppEvent::Mouse(MouseEvent {
+                kind,
+                column: na.x + 2,
+                row: na.y + 1,
+                modifiers: KeyModifiers::NONE,
+            }));
+        };
+        // Wheel down over the NODES list → it scrolls.
+        wheel(&mut app, MouseEventKind::ScrollDown);
+        wheel(&mut app, MouseEventKind::ScrollDown);
+        draw(&mut app);
+        assert_eq!(app.nodes_scroll, 2, "wheel scrolled the nodes list down");
+        // Wheel up past the top → clamps at 0.
+        for _ in 0..5 {
+            wheel(&mut app, MouseEventKind::ScrollUp);
+        }
+        draw(&mut app);
+        assert_eq!(app.nodes_scroll, 0, "scroll clamps at the top");
+        // Selecting an off-screen node auto-reveals it.
+        app.active_ws = 9;
+        draw(&mut app);
+        assert!(
+            app.nodes_scroll > 0,
+            "the active node was scrolled into view"
+        );
+    }
+
+    #[test]
+    fn session_delete_button_dismisses() {
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::Terminal;
+
+        let sess = |id: &str, p: &str| crate::agent::SessionInfo {
+            agent: "claude".into(),
+            session_id: id.into(),
+            cwd: PathBuf::from(p),
+            updated: std::time::SystemTime::now(),
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        app.resumable = vec![sess("s0", "/p/a"), sess("s1", "/p/b")];
+
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut draw = |app: &mut App| {
+            term.draw(|f| crate::ui::render(f, app))
+                .map(|_| ())
+                .unwrap()
+        };
+        // No delete affordance without hover.
+        draw(&mut app);
+        assert!(app.session_del_rects.is_empty());
+        // Hover the second session row → a ✕ appears for exactly that row.
+        let row = app.session_rects.iter().find(|(i, _)| *i == 1).unwrap().1;
+        app.hover = Some((row.x + 2, row.y));
+        draw(&mut app);
+        assert_eq!(app.session_del_rects.len(), 1, "hover reveals one ✕");
+        // Click the ✕ → the session leaves the list and is remembered as dismissed.
+        let xr = app.session_del_rects[0].1;
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: xr.x + 1,
+            row: xr.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(
+            app.resumable.iter().all(|s| s.session_id != "s1"),
+            "session removed from the sidebar list"
+        );
+        assert!(
+            app.dismissed_sessions.contains("s1"),
+            "stays dismissed across rescans"
+        );
     }
 }
 
