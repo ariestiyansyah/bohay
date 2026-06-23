@@ -46,9 +46,7 @@ fn claude_config_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         return PathBuf::from(d);
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = crate::platform::home_dir().unwrap_or_default();
     home.join(".claude")
 }
 

@@ -44,7 +44,7 @@ impl Pane {
             pixel_height: 0,
         })?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = crate::platform::default_shell();
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");

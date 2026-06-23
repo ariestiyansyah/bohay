@@ -2,6 +2,25 @@
 
 use std::path::PathBuf;
 
+/// The user's home directory, cross-platform (`$HOME`, else `%USERPROFILE%`).
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// The default interactive shell to spawn in a pane.
+pub fn default_shell() -> String {
+    #[cfg(windows)]
+    {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+}
+
 /// The current working directory of a process, or `None` if unavailable.
 /// Used to make a workspace follow where the user actually works.
 #[cfg(target_os = "macos")]

@@ -32,7 +32,10 @@ the multiplexer.
 
 ## Install
 
-Requires a recent stable Rust toolchain.
+Requires a recent stable Rust toolchain. Runs on **macOS, Linux, and Windows** — the IPC
+layer uses Unix-domain sockets on Unix and named pipes on Windows, and the PTY uses ConPTY on
+Windows. (On Windows, live working-directory tracking and the bash integration hook are not
+available; agent session resume still works.)
 
 ```bash
 git clone <repo-url> bohay

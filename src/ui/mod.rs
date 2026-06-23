@@ -166,8 +166,8 @@ fn pane_state(app: &App, id: PaneId) -> State {
 /// Collapse `$HOME` to `~` and truncate from the left to fit `max` columns.
 fn short_path(p: &Path, max: u16) -> String {
     let mut s = p.display().to_string();
-    if let Ok(home) = std::env::var("HOME") {
-        if let Some(rest) = s.strip_prefix(&home) {
+    if let Some(home) = crate::platform::home_dir() {
+        if let Some(rest) = s.strip_prefix(home.to_string_lossy().as_ref()) {
             s = format!("~{rest}");
         }
     }
