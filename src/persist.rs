@@ -46,7 +46,16 @@ pub struct PaneSnap {
     /// The visible screen as ANSI, replayed on restore.
     #[serde(default)]
     pub screen: Option<String>,
+    /// (module_id, entrypoint) for a module pane (MOD-2), re-spawned on restore.
+    #[serde(default)]
+    pub module: Option<(String, String)>,
 }
+
+/// Serializes tests that mutate the global `$BOHAY_HOME` env + config files, so
+/// they don't race on each other's config / registry I/O. Lock it for the whole
+/// test body. Shared across modules (`app`, `module`, …).
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// `~/.bohay/` (or `~/.bohay-dev/` in debug builds). Override with `$BOHAY_HOME`.
 pub fn config_dir() -> PathBuf {
@@ -107,6 +116,10 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
                             .ok()
                             .map(|e| e.snapshot_ansi())
                             .filter(|s| s.len() < 256 * 1024);
+                        let module = app
+                            .module_panes
+                            .get(&id)
+                            .map(|r| (r.module_id.clone(), r.entrypoint.clone()));
                         (
                             id.0,
                             PaneSnap {
@@ -114,6 +127,7 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
                                 command: p.command.clone(),
                                 agent_session,
                                 screen,
+                                module,
                             },
                         )
                     })

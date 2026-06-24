@@ -74,13 +74,10 @@ impl App {
             (n.enabled, n.on_blocked, n.on_done)
         };
         for (id, st, agent) in changes {
-            api::publish(
-                &self.events,
-                json!({
-                    "event": "pane.agent_status_changed",
-                    "data": { "pane": id.0.to_string(), "status": state_str(st), "agent": agent }
-                })
-                .to_string(),
+            // Publishes to subscribers and fires any module `[[events]]` hooks.
+            self.emit_event(
+                "pane.agent_status_changed",
+                json!({ "pane": id.0.to_string(), "status": state_str(st), "agent": agent }),
             );
             // Queue a bell/desktop notification on the configured transitions.
             let wanted = notify_on
@@ -140,7 +137,10 @@ impl App {
                             .get(id)
                             .map(|p| p.cwd.display().to_string())
                             .unwrap_or_default();
-                        json!({"pane": id.0.to_string(), "agent": agent, "status": status, "focused": *id == focus, "cwd": cwd})
+                        let module = self.module_panes.get(id).map(|r| {
+                            json!({"id": r.module_id, "entrypoint": r.entrypoint})
+                        });
+                        json!({"pane": id.0.to_string(), "agent": agent, "status": status, "focused": *id == focus, "cwd": cwd, "module": module})
                     })
                     .collect();
                 Ok(json!({"type":"pane_list","panes":panes}))
@@ -345,6 +345,148 @@ impl App {
                     "visible": self.sidebar_visible,
                 }))
             }
+            // ── modules (docs/13) ──
+            "module.list" => {
+                let arr: Vec<Value> = self.modules.modules.iter().map(module_json).collect();
+                Ok(json!({"type":"module_list","modules":arr}))
+            }
+            "module.info" => {
+                let id = req_str(p, "id")?;
+                let m = self
+                    .modules
+                    .find(id)
+                    .ok_or_else(|| module_err(format!("no module {id}")))?;
+                Ok(json!({
+                    "type": "module_info",
+                    "id": m.id,
+                    "name": m.manifest.name,
+                    "version": m.manifest.version,
+                    "description": m.manifest.description,
+                    "enabled": m.enabled,
+                    "runnable": m.is_runnable(),
+                    "source": m.source,
+                    "root": m.root.display().to_string(),
+                    "warning": m.warning,
+                    "platforms": m.manifest.platforms,
+                    "actions": m.manifest.actions.iter()
+                        .map(|a| json!({"id": a.id, "title": a.title, "contexts": a.contexts})).collect::<Vec<_>>(),
+                    "panes": m.manifest.panes.iter()
+                        .map(|pe| json!({"id": pe.id, "title": pe.title, "placement": pe.placement})).collect::<Vec<_>>(),
+                    "events": m.manifest.events.iter().map(|e| e.on.clone()).collect::<Vec<_>>(),
+                    "build_steps": m.manifest.build.len(),
+                }))
+            }
+            "module.link" => {
+                let path = req_str(p, "path")?;
+                let enabled = !p.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                let source = p.get("source").and_then(|v| v.as_str()).map(String::from);
+                let id = self
+                    .module_link_with(std::path::Path::new(path), enabled, source)
+                    .map_err(module_err)?;
+                Ok(json!({"type":"module","id": id}))
+            }
+            "module.unlink" => {
+                self.module_unlink(req_str(p, "id")?).map_err(module_err)?;
+                Ok(json!({"type":"ok"}))
+            }
+            "module.uninstall" => {
+                self.module_uninstall(req_str(p, "id")?)
+                    .map_err(module_err)?;
+                Ok(json!({"type":"ok"}))
+            }
+            "module.enable" => {
+                self.module_set_enabled(req_str(p, "id")?, true)
+                    .map_err(module_err)?;
+                Ok(json!({"type":"ok"}))
+            }
+            "module.disable" => {
+                self.module_set_enabled(req_str(p, "id")?, false)
+                    .map_err(module_err)?;
+                Ok(json!({"type":"ok"}))
+            }
+            "module.action.list" => {
+                let mut arr = Vec::new();
+                for m in &self.modules.modules {
+                    for a in &m.manifest.actions {
+                        arr.push(json!({
+                            "module": m.id, "action": a.id,
+                            "qualified": format!("{}.{}", m.id, a.id),
+                            "title": a.title, "contexts": a.contexts,
+                            "runnable": m.is_runnable(),
+                        }));
+                    }
+                }
+                Ok(json!({"type":"module_action_list","actions":arr}))
+            }
+            "module.action.invoke" => {
+                let action = p
+                    .get("id")
+                    .or_else(|| p.get("action"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        (
+                            "invalid_request".to_string(),
+                            "action id is required".to_string(),
+                        )
+                    })?;
+                let module = p.get("module").and_then(|v| v.as_str());
+                let log_id = self
+                    .module_invoke_action(action, module, "api")
+                    .map_err(module_err)?;
+                Ok(json!({"type":"module_command","log_id": log_id}))
+            }
+            "module.log.list" => {
+                let filter = p
+                    .get("id")
+                    .or_else(|| p.get("module"))
+                    .and_then(|v| v.as_str());
+                let limit = param_usize(p, "limit").unwrap_or(50);
+                let logs: Vec<Value> = self
+                    .module_logs
+                    .iter()
+                    .rev()
+                    .filter(|l| filter.is_none_or(|f| l.module_id == f))
+                    .take(limit)
+                    .map(|l| serde_json::to_value(l).unwrap_or(Value::Null))
+                    .collect();
+                Ok(json!({"type":"module_log_list","logs":logs}))
+            }
+            "module.config_dir" => {
+                let dir = self
+                    .module_config_dir(req_str(p, "id")?)
+                    .map_err(module_err)?;
+                Ok(json!({"type":"module_config_dir","dir": dir.display().to_string()}))
+            }
+            "module.pane.open" => {
+                let module = p
+                    .get("module")
+                    .or_else(|| p.get("id"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        (
+                            "invalid_request".to_string(),
+                            "module id is required".to_string(),
+                        )
+                    })?;
+                let entrypoint = req_str(p, "entrypoint")?;
+                let placement = p.get("placement").and_then(|v| v.as_str());
+                let id = self
+                    .module_open_pane(module, entrypoint, placement, "api")
+                    .map_err(module_err)?;
+                Ok(json!({"type":"pane","pane": id.0.to_string()}))
+            }
+            "module.pane.focus" => {
+                let id = self.resolve_pane(p).ok_or_else(not_found)?;
+                self.focus_pane_global(id);
+                Ok(json!({"type":"ok"}))
+            }
+            "module.pane.close" => {
+                let id = self.resolve_pane(p).ok_or_else(not_found)?;
+                self.close_pane(id);
+                Ok(json!({"type":"ok"}))
+            }
             other => Err((
                 "invalid_request".to_string(),
                 format!("unknown method: {other}"),
@@ -369,6 +511,34 @@ impl App {
 
 fn not_found() -> (String, String) {
     ("not_found".to_string(), "pane not found".to_string())
+}
+
+fn module_err(e: String) -> (String, String) {
+    ("module_error".to_string(), e)
+}
+
+/// Require a non-empty string param.
+fn req_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, (String, String)> {
+    p.get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ("invalid_request".to_string(), format!("{key} is required")))
+}
+
+/// A trimmed JSON view of an installed module for `module.list`.
+fn module_json(m: &crate::module::InstalledModule) -> Value {
+    json!({
+        "id": m.id,
+        "name": m.manifest.name,
+        "version": m.manifest.version,
+        "enabled": m.enabled,
+        "runnable": m.is_runnable(),
+        "root": m.root.display().to_string(),
+        "source": m.source,
+        "actions": m.manifest.actions.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+        "panes": m.manifest.panes.iter().map(|pe| pe.id.clone()).collect::<Vec<_>>(),
+        "warning": m.warning,
+    })
 }
 
 /// Parse a usize param that may be a JSON number or string.

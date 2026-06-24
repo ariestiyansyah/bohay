@@ -5,8 +5,9 @@
 bohay is a client/server terminal multiplexer that runs inside your existing terminal as a
 single static Rust binary. It gives you persistent panes, tabs, and workspaces that survive
 detach; a live sidebar showing every agent's state (blocked / working / done / idle); a
-mouse-native split/resize UI; and a local socket API that lets the agents themselves drive
-the multiplexer.
+mouse-native split/resize UI; agent session resume; a tabbed settings menu (themes,
+notifications, layout); an extension system (**modules**); and a local socket API that lets
+the agents themselves drive the multiplexer.
 
 ```
 ┌ NODES ─────────────┐ │  1    ✕   +
@@ -117,8 +118,8 @@ also fully mouse-driven — click tabs, nodes, agents, panes, the `+`/`✕` butt
 dialog: **Theme** (noir / latte / mono, live preview), **Layout** (sidebar width, gaps, pane
 titles, resume placement; **on Windows**, also a **Shell** picker — PowerShell / Command
 Prompt — for new panes), **Notifications** (ring the terminal bell + a desktop notification
-when an agent gets blocked or finishes, with a **Test bell** button), **Modules**, and
-**Agents** (install the resume hook). Changes apply instantly and persist to
+when an agent gets blocked or finishes, with a **Test bell** button), **Modules** (enable /
+disable installed modules), and **Agents** (install the resume hook). Changes apply instantly and persist to
 `~/.bohay/config.json`. `↑↓` move, `⇥` switch tab, `←→` adjust, `⏎` apply, `esc` close.
 
 ## CLI
@@ -146,11 +147,55 @@ panes / agents:   pane list | pane split [<id>] [--down] | pane focus <id>
 sessions:         agent sessions | agent resume <id>     # resumable agent sessions
 appearance:       ui sidebar --width <n> | ui sidebar --hide|--show
 events:           events                  # stream status changes
+modules:          module search|list|info|link|install|run|pane|log|…   # see below
 server:           server stop             # stop the server and all panes
 ```
 
 When a command runs inside a bohay pane, the target pane defaults to that pane (via the
 injected `$BOHAY_PANE_ID`), so `bohay pane split` "just works" without an explicit id.
+
+## Modules (extensions)
+
+A **module** is a shareable directory with a `bohay-module.toml` manifest that declares
+*commands* (argv arrays, run without a shell). bohay runs them as subprocesses with the focused
+node/tab/pane injected as `BOHAY_*` env, and they call back through the same socket API as the
+CLI — no SDK, no scripting runtime, any language. (Modeled on the docs/13 spec.)
+
+```bash
+bohay module search [query]            # discover modules tagged `bohay-module` on GitHub
+bohay module link ./my-module          # register a local module dir
+bohay module install owner/repo        # install from GitHub (clone + preview + build)
+bohay module list                      # list installed modules
+bohay module run my-module refresh     # invoke an action; output is captured + logged
+bohay module pane open my-module board # open a module pane (split | overlay | tab)
+bohay module log                       # tail command logs
+bohay module enable|disable <id>       # toggle a module
+bohay module unlink <id> | uninstall <id>
+```
+
+Modules can also declare **event hooks** — e.g. run a script when an agent becomes blocked or
+finishes (`pane.agent_status_changed`), or when a pane/tab/node opens or closes.
+
+A minimal module is just a manifest + a script:
+
+```toml
+# bohay-module.toml
+id = "you.echo"
+name = "Echo"
+version = "0.1.0"
+min_bohay_version = "0.1.0"
+
+[[actions]]
+id = "refresh"
+title = "Refresh"
+command = ["sh", "-c", "echo updated $BOHAY_MODULE_CONTEXT_JSON"]
+```
+
+**Writing a module:** see the [module author's guide](MODULE-GUIDE.md) for the full
+manifest reference, the injected `BOHAY_*` environment, the context blob, and a worked example.
+
+Actions, panes, event hooks, local/GitHub install, and GitHub-topic discovery all ship today
+(docs/13). Only an optional hosted marketplace is left — install never needs it.
 
 ## Agent session resume
 
@@ -200,15 +245,20 @@ always takes precedence over disk discovery.
 State lives in **`~/.bohay/`** (debug builds use `~/.bohay-dev/`). Override the location with
 `$BOHAY_HOME`.
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
 | `~/.bohay/session.json` | Saved workspaces / tabs / pane tree (restored on launch) |
+| `~/.bohay/config.json` | Settings — theme, layout, notifications, shell (written by the Settings menu) |
+| `~/.bohay/modules.json` | Installed-module registry |
+| `~/.bohay/modules/` | Per-module `config/`, `state/`, and `git/` (managed checkouts) |
 | `~/.bohay/bohay.sock` | JSON control-API socket (the CLI + agents) |
 | `~/.bohay/bohay-client.sock` | Binary render-frame socket (client ↔ server) |
 
-**Appearance.** The sidebar width is adjustable — `bohay ui sidebar --width <n>` (18–44
-columns), or toggle it with `bohay ui sidebar --hide|--show`. A full settings menu (theme,
-layout, notifications, integrations) is planned; see `docs/15-settings-menu.md`.
+**Appearance & behavior.** Everything is in the **Settings** menu (the ⚙ gear, or
+`Ctrl+Space` then `,`): theme, sidebar width + pane gaps, notifications, the new-pane shell
+(Windows), agent integrations, and module enable/disable. Changes apply live and persist to
+`config.json`. The sidebar is also adjustable from the CLI — `bohay ui sidebar --width <n>`
+(18–44) or `--hide|--show`. See `docs/15-settings-menu.md`.
 
 ## Architecture
 
@@ -223,21 +273,27 @@ src/
     mod.rs             workspaces → tabs → BSP pane tree; construction & mutations
     input.rs           key/mouse events + the Ctrl+Space command map
     dispatch.rs        JSON control-API dispatch + agent-detection tick
+    settings.rs        Settings-modal state + per-tab apply logic
+    modules.rs         module registry ops, action runner, event hooks, panes
   ui/                rendering (off-screen draw pass)
     mod.rs             render() orchestration + shared layout helpers
     borders.rs         manual cell-by-cell pane borders
     panes.rs           terminal blit + pane titles
-    sidebar.rs         NODES + AGENTS lists
+    sidebar.rs         NODES + AGENTS lists + the ⚙ gear
     tabbar.rs          tab bar
     status.rs          bottom status line
-    theme.rs           color palette
+    settings.rs        the tabbed Settings modal
+    theme.rs           color palettes (noir / latte / mono)
+  module/            extension system (docs/13): manifest, registry, paths,
+                     context, runtime, install, discovery
   terminal/          PTY actor (pty) + pure-Rust VT engine (vt/)
   ipc/               Unix-socket layer: control api, frame protocol, client, server
+  config.rs          ~/.bohay/config.json store (theme / layout / notifications / shell)
   layout.rs          BSP tiling tree
   detect.rs          agent detection (screen + activity based)
   agent.rs           agent native-session discovery & resume
   persist.rs         session snapshot / restore
-  platform.rs        OS-specific bits (process cwd)
+  platform.rs        OS-specific bits (cwd, shell resolution)
   integration.rs     agent integration hooks
 ```
 
