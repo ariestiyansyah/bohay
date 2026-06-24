@@ -91,6 +91,11 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
     for ws in &app.workspaces {
         let mut tabs = Vec::new();
         for tab in &ws.tabs {
+            // Git tabs (docs/17) aren't persisted in GIT-1 — they have no real
+            // panes; re-open them from the sidebar after a restart.
+            if tab.is_git() {
+                continue;
+            }
             let panes = tab
                 .layout
                 .leaves()

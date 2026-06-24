@@ -197,6 +197,27 @@ manifest reference, the injected `BOHAY_*` environment, the context blob, and a 
 Actions, panes, event hooks, local/GitHub install, and GitHub-topic discovery all ship today
 (docs/13). Only an optional hosted marketplace is left — install never needs it.
 
+## Git & GitHub (the git tab)
+
+Click a node's **branch name** in the sidebar (or `Ctrl+Space g`) to open a dedicated **`⎇ git`
+tab** — a keyboard-driven dashboard of the repo:
+
+Six views — **Commits · Flow · Branches · PRs · Issues · Status** — selectable by **clicking the
+tab**, `1`–`6`, or `Tab`:
+
+- **Flow** — a GitHub-flow-style chart: the trunk as a track with branches diverging below, each
+  with its commit dots, ahead/behind, and matched PR badge + merge arrow.
+- **PRs** — status badges (`[Review]`/`[Approved]`/`[Denied]`/`[Draft]`/`[Merged]`), CI checks
+  (`✓ ✗ ●`), reviewer, branch, `+/-`. **Issues**, **Branches**, **Commits** (raw `git --graph`),
+  and the **working tree** (Status).
+- `j/k` move · `/` filter · `⏎` checkout/show · `d` diff · `o` open on GitHub · `c` create PR ·
+  `m` toggle *this repo ↔ my work* (cross-repo) · `r` refresh · `q` close.
+
+Local git is read directly; GitHub data comes from the **`gh` CLI** (`gh pr list` etc.) — **no
+HTTP dependency**, and it degrades to a local-git viewer when `gh` isn't installed/authenticated.
+Agents can read it too: `bohay git status | branches | log`, `bohay git open`. See
+[`docs/17-git-integration.md`](docs/17-git-integration.md).
+
 ## Agent session resume
 
 When you reopen bohay, it **resumes each agent's native session** where you left off — with
@@ -215,7 +236,9 @@ exit), so it survives a clean quit, a detached server, or a crash.
 ### Resume from the sidebar
 
 The **AGENTS** panel in the sidebar lists not just your live agents but also recent
-**resumable sessions** discovered on disk (one per project, newest first). Click one to
+**resumable sessions** discovered on disk (one per project, newest first). The **All / Active**
+toggle at the right of the AGENTS header filters the list: **All** (default) shows live agents
+plus the session history, **Active** shows only the live agents. Click one to
 reopen it — bohay spawns a pane in that project's node (creating the node if needed) and runs
 the agent's resume command. Hover a resume row to reveal a **✕** that removes it from the list
 (it stays hidden but the actual session on disk is untouched). Both sidebar lists (NODES and

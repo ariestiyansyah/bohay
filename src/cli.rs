@@ -11,7 +11,18 @@ use serde_json::{json, Value};
 pub fn is_cli(args: &[String]) -> bool {
     matches!(
         args.get(1).map(String::as_str),
-        Some("ping" | "pane" | "node" | "tab" | "agent" | "ui" | "events" | "module" | "help")
+        Some(
+            "ping"
+                | "pane"
+                | "node"
+                | "tab"
+                | "agent"
+                | "ui"
+                | "events"
+                | "module"
+                | "git"
+                | "help"
+        )
     )
 }
 
@@ -67,6 +78,12 @@ modules (extensions — docs/13):
   module pane focus <pane> | close <pane>
   module log [<id>]          tail module command logs (--limit N)
   module config-dir <id>     print/create a module's config dir
+
+git (docs/17):
+  git status                 branch, ahead/behind, working tree of the current node
+  git branches               local branches with tracking
+  git log [--limit N]        recent commits
+  git open [<node>]          open the git tab for a node
 
 events:
   events                     stream live status changes
@@ -419,6 +436,17 @@ fn parse(args: &[String]) -> Result<(String, Value)> {
         }
         ("module", _) => ("module.list".into(), json!({})),
 
+        ("git", "branches") => ("git.branches".into(), json!({})),
+        ("git", "log") => {
+            let mut obj = serde_json::Map::new();
+            if let Some(n) = flag(args, "--limit").and_then(|s| s.parse::<u64>().ok()) {
+                obj.insert("n".to_string(), json!(n));
+            }
+            ("git.log".into(), Value::Object(obj))
+        }
+        ("git", "open") => ("git.open".into(), one("node", arg0())),
+        ("git", _) => ("git.status".into(), json!({})),
+
         _ => return Err(anyhow!("unknown command. Try `bohay help`.")),
     })
 }
@@ -490,5 +518,21 @@ mod tests {
         let (m, p) = parse(&argv("bohay module enable my-mod")).unwrap();
         assert_eq!(m, "module.enable");
         assert_eq!(p.get("id").and_then(|v| v.as_str()), Some("my-mod"));
+    }
+
+    #[test]
+    fn maps_git_commands() {
+        let (m, _) = parse(&argv("bohay git status")).unwrap();
+        assert_eq!(m, "git.status");
+        let (m, _) = parse(&argv("bohay git")).unwrap();
+        assert_eq!(m, "git.status");
+        let (m, _) = parse(&argv("bohay git branches")).unwrap();
+        assert_eq!(m, "git.branches");
+        let (m, p) = parse(&argv("bohay git log --limit 5")).unwrap();
+        assert_eq!(m, "git.log");
+        assert_eq!(p.get("n").and_then(|v| v.as_u64()), Some(5));
+        let (m, p) = parse(&argv("bohay git open 2")).unwrap();
+        assert_eq!(m, "git.open");
+        assert_eq!(p.get("node").and_then(|v| v.as_str()), Some("2"));
     }
 }

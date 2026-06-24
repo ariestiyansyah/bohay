@@ -487,6 +487,46 @@ impl App {
                 self.close_pane(id);
                 Ok(json!({"type":"ok"}))
             }
+            // ── git (docs/17) — fast local-git reads + open the git tab ──
+            "git.status" => {
+                let cwd = self.git_node_cwd(p);
+                let s = crate::git::local::status(&cwd).map_err(git_err)?;
+                let files = |v: &[crate::git::model::FileChange]| -> Vec<Value> {
+                    v.iter()
+                        .map(|c| json!({"code": c.code.to_string(), "path": c.path}))
+                        .collect()
+                };
+                Ok(json!({
+                    "type": "git_status", "branch": s.branch, "upstream": s.upstream,
+                    "ahead": s.ahead, "behind": s.behind,
+                    "staged": files(&s.staged), "unstaged": files(&s.unstaged),
+                    "untracked": s.untracked, "stashes": s.stashes,
+                }))
+            }
+            "git.branches" => {
+                let cwd = self.git_node_cwd(p);
+                let v = crate::git::local::branches(&cwd).map_err(git_err)?;
+                let arr: Vec<Value> = v
+                    .iter()
+                    .map(|b| json!({"name": b.name, "head": b.is_head, "ahead": b.ahead, "behind": b.behind, "subject": b.subject}))
+                    .collect();
+                Ok(json!({"type":"git_branches","branches":arr}))
+            }
+            "git.log" => {
+                let cwd = self.git_node_cwd(p);
+                let n = param_usize(p, "n").unwrap_or(30);
+                let v = crate::git::local::commits(&cwd, n, false).map_err(git_err)?;
+                let arr: Vec<Value> = v
+                    .iter()
+                    .map(|c| json!({"sha": c.sha, "subject": c.subject, "author": c.author, "when": c.when, "refs": c.refs}))
+                    .collect();
+                Ok(json!({"type":"git_log","commits":arr}))
+            }
+            "git.open" => {
+                let node = param_usize(p, "node").unwrap_or(self.active_ws);
+                self.open_git_tab(node);
+                Ok(json!({"type":"ok","git": self.active_is_git()}))
+            }
             other => Err((
                 "invalid_request".to_string(),
                 format!("unknown method: {other}"),
@@ -507,10 +547,23 @@ impl App {
             None => Some(self.layout().focus),
         }
     }
+
+    /// The cwd of the `node` param (else the active node) for git.* methods.
+    fn git_node_cwd(&self, p: &Value) -> PathBuf {
+        let i = param_usize(p, "node").unwrap_or(self.active_ws);
+        self.workspaces
+            .get(i)
+            .map(|w| w.cwd.clone())
+            .unwrap_or_else(|| self.ws().cwd.clone())
+    }
 }
 
 fn not_found() -> (String, String) {
     ("not_found".to_string(), "pane not found".to_string())
+}
+
+fn git_err(e: String) -> (String, String) {
+    ("git_error".to_string(), e)
 }
 
 fn module_err(e: String) -> (String, String) {

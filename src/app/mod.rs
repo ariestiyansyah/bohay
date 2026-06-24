@@ -22,6 +22,7 @@ use crate::terminal::pty::Pane;
 use crate::ui::theme::{State, Theme};
 
 mod dispatch;
+mod git;
 mod input;
 mod modules;
 mod settings;
@@ -45,6 +46,21 @@ pub enum Mode {
 
 pub struct Tab {
     pub layout: TileLayout,
+    /// When `Some`, this is a **git tab** (docs/17): render the git dashboard
+    /// instead of panes. The `layout` holds a placeholder leaf (no real pane is
+    /// spawned), so all existing `layout()` code keeps working unchanged.
+    pub git: Option<Box<crate::git::GitView>>,
+}
+
+impl Tab {
+    /// A normal pane tab.
+    fn panes(layout: TileLayout) -> Tab {
+        Tab { layout, git: None }
+    }
+
+    pub fn is_git(&self) -> bool {
+        self.git.is_some()
+    }
 }
 
 pub struct Workspace {
@@ -52,6 +68,8 @@ pub struct Workspace {
     pub cwd: PathBuf,
     /// Current git branch of `cwd`, if it's inside a repo (for the NODES list).
     pub branch: Option<String>,
+    /// Ahead/behind upstream, set when this node's git tab fetches status (docs/17).
+    pub git_ahead_behind: Option<(u32, u32)>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
 }
@@ -132,6 +150,9 @@ pub struct App {
     pub agents_scroll: usize,
     pub nodes_area: Rect,
     pub agents_area: Rect,
+    /// AGENTS list filter: `false` (default) shows live agents + resumable
+    /// session history; `true` shows only live (active) agents.
+    pub agents_active_only: bool,
     /// Last active node shown, to auto-reveal it on a programmatic change.
     pub last_active_ws_shown: usize,
     /// Last mouse position, for hover affordances (the session delete ✕).
@@ -143,6 +164,12 @@ pub struct App {
     pub tab_rects: Vec<(usize, Rect)>,
     pub tab_close_rects: Vec<(usize, Rect)>,
     pub ws_rects: Vec<(usize, Rect)>,
+    /// Clickable git-branch text per node (opens the git tab — docs/17).
+    pub node_branch_rects: Vec<(usize, Rect)>,
+    /// Clickable view-selector tabs in the active git tab (Commits/Flow/…).
+    pub git_section_rects: Vec<(crate::git::Section, Rect)>,
+    /// The All/Active filter toggle in the AGENTS header (`bool` = active_only).
+    pub agents_filter_rects: Vec<(bool, Rect)>,
     pub agent_rects: Vec<(PaneId, Rect)>,
     /// Resumable-session rows in the sidebar (index into `resumable`).
     pub session_rects: Vec<(usize, Rect)>,
@@ -195,9 +222,8 @@ impl App {
                 name,
                 cwd,
                 branch: None,
-                tabs: vec![Tab {
-                    layout: TileLayout::new(id),
-                }],
+                git_ahead_behind: None,
+                tabs: vec![Tab::panes(TileLayout::new(id))],
                 active_tab: 0,
             }],
             active_ws: 0,
@@ -222,6 +248,7 @@ impl App {
             last_sessions_at: Instant::now(),
             nodes_scroll: 0,
             agents_scroll: 0,
+            agents_active_only: false,
             nodes_area: Rect::ZERO,
             agents_area: Rect::ZERO,
             last_active_ws_shown: 0,
@@ -231,6 +258,9 @@ impl App {
             pane_rects: Vec::new(),
             tab_rects: Vec::new(),
             ws_rects: Vec::new(),
+            node_branch_rects: Vec::new(),
+            git_section_rects: Vec::new(),
+            agents_filter_rects: Vec::new(),
             agent_rects: Vec::new(),
             session_rects: Vec::new(),
             session_del_rects: Vec::new(),
@@ -320,7 +350,7 @@ impl App {
                     remap.insert(*raw, id);
                 }
                 let layout = TileLayout::from_tree(&tab.tree, &remap, tab.focus)?;
-                tabs.push(Tab { layout });
+                tabs.push(Tab::panes(layout));
             }
             if tabs.is_empty() {
                 continue;
@@ -330,6 +360,7 @@ impl App {
                 name: ws.name,
                 cwd: ws.cwd,
                 branch: None,
+                git_ahead_behind: None,
                 tabs,
                 active_tab,
             });
@@ -369,6 +400,7 @@ impl App {
             last_sessions_at: Instant::now(),
             nodes_scroll: 0,
             agents_scroll: 0,
+            agents_active_only: false,
             nodes_area: Rect::ZERO,
             agents_area: Rect::ZERO,
             last_active_ws_shown: 0,
@@ -378,6 +410,9 @@ impl App {
             pane_rects: Vec::new(),
             tab_rects: Vec::new(),
             ws_rects: Vec::new(),
+            node_branch_rects: Vec::new(),
+            git_section_rects: Vec::new(),
+            agents_filter_rects: Vec::new(),
             agent_rects: Vec::new(),
             session_rects: Vec::new(),
             session_del_rects: Vec::new(),
@@ -474,9 +509,7 @@ impl App {
         let cwd = self.focused_cwd();
         if let Some(id) = self.spawn_into(cwd) {
             let ws = &mut self.workspaces[self.active_ws];
-            ws.tabs.push(Tab {
-                layout: TileLayout::new(id),
-            });
+            ws.tabs.push(Tab::panes(TileLayout::new(id)));
             ws.active_tab = ws.tabs.len() - 1;
             let tab = self.ws().active_tab + 1;
             self.emit_event("tab.created", serde_json::json!({"tab": tab.to_string()}));
@@ -493,9 +526,8 @@ impl App {
                 name,
                 cwd,
                 branch,
-                tabs: vec![Tab {
-                    layout: TileLayout::new(id),
-                }],
+                git_ahead_behind: None,
+                tabs: vec![Tab::panes(TileLayout::new(id))],
                 active_tab: 0,
             });
             self.active_ws = self.workspaces.len() - 1;
@@ -603,9 +635,7 @@ impl App {
         let Some(id) = self.spawn_into(s.cwd.clone()) else {
             return;
         };
-        let tab = Tab {
-            layout: TileLayout::new(id),
-        };
+        let tab = Tab::panes(TileLayout::new(id));
         // Per the Layout setting, reuse the session's own node (or the node at
         // its cwd); otherwise open it as a tab in the currently active node.
         let target = if self.config.layout.resume_in_new_node {
@@ -624,6 +654,7 @@ impl App {
                 name: ws_name(&s.cwd),
                 cwd: s.cwd.clone(),
                 branch,
+                git_ahead_behind: None,
                 tabs: vec![tab],
                 active_tab: 0,
             });

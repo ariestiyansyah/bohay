@@ -1,0 +1,91 @@
+//! Data the git tab renders (docs/17). Local-git structs are filled by
+//! `git/local.rs`; GitHub structs (PRs/issues) arrive in a later phase via
+//! `git/github.rs`. All plain owned data so it can live in `App` state.
+
+/// Working-tree + branch summary of a repo.
+#[derive(Clone, Default)]
+pub struct RepoStatus {
+    pub branch: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub upstream: Option<String>,
+    pub staged: Vec<FileChange>,
+    pub unstaged: Vec<FileChange>,
+    pub untracked: Vec<String>,
+    pub stashes: Vec<String>,
+}
+
+impl RepoStatus {
+    /// Total tracked changes (staged + unstaged + untracked).
+    pub fn dirty_count(&self) -> usize {
+        self.staged.len() + self.unstaged.len() + self.untracked.len()
+    }
+}
+
+#[derive(Clone)]
+pub struct FileChange {
+    /// One-letter git status (M/A/D/R/…).
+    pub code: char,
+    pub path: String,
+}
+
+/// A local or remote branch with its upstream tracking info.
+#[derive(Clone)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_head: bool,
+    pub ahead: u32,
+    pub behind: u32,
+    pub subject: String,
+    pub author: String,
+    pub when: String, // relative date
+}
+
+/// CI rollup state for a PR (from gh's `statusCheckRollup`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Checks {
+    None,
+    Pending,
+    Passing,
+    Failing,
+}
+
+/// A GitHub pull request (GIT-2). Fetched via the `gh` CLI.
+#[derive(Clone)]
+pub struct PullRequest {
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub state: String, // OPEN / CLOSED / MERGED
+    pub is_draft: bool,
+    pub review_decision: String, // APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / ""
+    pub reviewers: Vec<String>,
+    pub head: String, // headRefName
+    pub additions: u64,
+    pub deletions: u64,
+    pub checks: Checks,
+    /// `owner/repo` — set in the cross-repo "my work" scope (else empty).
+    pub repo: String,
+}
+
+/// A GitHub issue (GIT-2).
+#[derive(Clone)]
+pub struct Issue {
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub repo: String,
+}
+
+/// A commit in the log / flow view.
+#[derive(Clone)]
+pub struct Commit {
+    pub sha: String, // short
+    pub subject: String,
+    pub author: String,
+    pub when: String,  // relative date
+    pub refs: String,  // decorations (HEAD -> main, tag: …)
+    pub graph: String, // graph prefix from `git log --graph`, if any
+}

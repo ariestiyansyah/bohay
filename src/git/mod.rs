@@ -1,0 +1,244 @@
+//! Git & GitHub integration — the **git tab** (docs/17). A node's branch is
+//! clickable; clicking it opens a built-in dashboard of the repo's branches,
+//! commit flow, working tree, and (later) GitHub PRs/issues. Data is shelled out
+//! to `git`/`gh` and fetched on a background thread — no HTTP dependency.
+//!
+//! GIT-1 (this layer): the tab, local-git sections (Branches / Commits / Status),
+//! async fetch. PRs/issues (GIT-2), actions (GIT-3), and the flow renderer +
+//! integrations (GIT-4) build on these pieces.
+
+pub mod github;
+pub mod local;
+pub mod model;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub use github::GhState;
+pub use model::Checks;
+use model::{BranchInfo, Commit, Issue, PullRequest, RepoStatus};
+
+/// Which section of the git tab is shown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Section {
+    Commits,
+    Flow,
+    Branches,
+    Prs,
+    Issues,
+    Status,
+}
+
+impl Section {
+    /// The view selector order (Commits is the default first tab).
+    pub const ALL: [Section; 6] = [
+        Section::Commits,
+        Section::Flow,
+        Section::Branches,
+        Section::Prs,
+        Section::Issues,
+        Section::Status,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Commits => "Commits",
+            Section::Flow => "Flow",
+            Section::Branches => "Branches",
+            Section::Prs => "PRs",
+            Section::Issues => "Issues",
+            Section::Status => "Status",
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|s| *s == self).unwrap_or(0)
+    }
+
+    pub fn from_index(i: usize) -> Section {
+        Self::ALL[i % Self::ALL.len()]
+    }
+
+    pub fn next(self) -> Section {
+        Self::from_index(self.index() + 1)
+    }
+
+    pub fn prev(self) -> Section {
+        Self::from_index(self.index() + Self::ALL.len() - 1)
+    }
+}
+
+/// PR/issue scope: the current repo, or everything you're involved in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    ThisRepo,
+    MyWork,
+}
+
+impl Scope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Scope::ThisRepo => "this repo",
+            Scope::MyWork => "my work",
+        }
+    }
+    pub fn toggle(self) -> Scope {
+        match self {
+            Scope::ThisRepo => Scope::MyWork,
+            Scope::MyWork => Scope::ThisRepo,
+        }
+    }
+}
+
+/// Load state of a fetched section.
+#[derive(Clone, Default)]
+pub enum Load<T> {
+    #[default]
+    Idle,
+    Loading,
+    Loaded(T),
+    Error(String),
+}
+
+/// Results delivered back to the loop from a fetch thread.
+pub enum GitPayload {
+    Status(Result<RepoStatus, String>),
+    Branches(Result<Vec<BranchInfo>, String>),
+    Commits(Result<Vec<Commit>, String>),
+    Gh(GhState),
+    Prs(Result<Vec<PullRequest>, String>),
+    Issues(Result<Vec<Issue>, String>),
+}
+
+fn next_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// State of an open git tab.
+pub struct GitView {
+    /// Token used to match async results back to this tab.
+    pub id: u64,
+    pub repo_root: PathBuf,
+    pub repo_name: String,
+    pub section: Section,
+    pub cursor: usize,
+    /// Vertical scroll offset for non-cursor views (Flow / Status).
+    pub scroll: usize,
+    pub filter: String,
+    pub filtering: bool,
+    pub scope: Scope,
+    pub gh: GhState,
+    pub status: Load<RepoStatus>,
+    pub branches: Load<Vec<BranchInfo>>,
+    pub commits: Load<Vec<Commit>>,
+    pub prs: Load<Vec<PullRequest>>,
+    pub issues: Load<Vec<Issue>>,
+    /// Last-seen CI state per PR, to notify only on a *transition* to failing.
+    pub prev_pr_checks: HashMap<u64, Checks>,
+}
+
+impl GitView {
+    pub fn new(repo_root: PathBuf) -> GitView {
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        GitView {
+            id: next_id(),
+            repo_root,
+            repo_name,
+            // Commits (the flow of work) is the default first view.
+            section: Section::Commits,
+            cursor: 0,
+            scroll: 0,
+            filter: String::new(),
+            filtering: false,
+            scope: Scope::ThisRepo,
+            gh: GhState::Missing,
+            status: Load::Loading,
+            branches: Load::Loading,
+            commits: Load::Loading,
+            prs: Load::Idle,
+            issues: Load::Idle,
+            prev_pr_checks: HashMap::new(),
+        }
+    }
+
+    /// Apply an async fetch result.
+    pub fn apply(&mut self, payload: GitPayload) {
+        match payload {
+            GitPayload::Status(r) => self.status = into_load(r),
+            GitPayload::Branches(r) => self.branches = into_load(r),
+            GitPayload::Commits(r) => self.commits = into_load(r),
+            GitPayload::Gh(s) => {
+                self.gh = s;
+                if s == GhState::Ready {
+                    if matches!(self.prs, Load::Idle) {
+                        self.prs = Load::Loading;
+                    }
+                    if matches!(self.issues, Load::Idle) {
+                        self.issues = Load::Loading;
+                    }
+                }
+            }
+            GitPayload::Prs(r) => self.prs = into_load(r),
+            GitPayload::Issues(r) => self.issues = into_load(r),
+        }
+    }
+}
+
+fn into_load<T>(r: Result<T, String>) -> Load<T> {
+    match r {
+        Ok(v) => Load::Loaded(v),
+        Err(e) => Load::Error(e),
+    }
+}
+
+/// Branches matching the filter (name/subject substring, case-insensitive).
+pub fn filtered_branches<'a>(
+    v: &'a [BranchInfo],
+    filter: &'a str,
+) -> impl Iterator<Item = &'a BranchInfo> {
+    let f = filter.to_lowercase();
+    v.iter().filter(move |b| {
+        f.is_empty() || b.name.to_lowercase().contains(&f) || b.subject.to_lowercase().contains(&f)
+    })
+}
+
+/// Commits matching the filter (subject/author substring, case-insensitive).
+pub fn filtered_commits<'a>(v: &'a [Commit], filter: &'a str) -> impl Iterator<Item = &'a Commit> {
+    let f = filter.to_lowercase();
+    v.iter().filter(move |c| {
+        f.is_empty()
+            || c.subject.to_lowercase().contains(&f)
+            || c.author.to_lowercase().contains(&f)
+    })
+}
+
+/// PRs matching the filter (title/author/branch substring).
+pub fn filtered_prs<'a>(
+    v: &'a [PullRequest],
+    filter: &'a str,
+) -> impl Iterator<Item = &'a PullRequest> {
+    let f = filter.to_lowercase();
+    v.iter().filter(move |p| {
+        f.is_empty()
+            || p.title.to_lowercase().contains(&f)
+            || p.author.to_lowercase().contains(&f)
+            || p.head.to_lowercase().contains(&f)
+    })
+}
+
+/// Issues matching the filter (title/author/label substring).
+pub fn filtered_issues<'a>(v: &'a [Issue], filter: &'a str) -> impl Iterator<Item = &'a Issue> {
+    let f = filter.to_lowercase();
+    v.iter().filter(move |i| {
+        f.is_empty()
+            || i.title.to_lowercase().contains(&f)
+            || i.author.to_lowercase().contains(&f)
+            || i.labels.iter().any(|l| l.to_lowercase().contains(&f))
+    })
+}

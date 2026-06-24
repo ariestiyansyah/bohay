@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod detect;
 mod event;
+mod git;
 mod ids;
 mod integration;
 mod ipc;
@@ -60,6 +61,7 @@ fn main() -> Result<()> {
 pub(crate) fn install_tui_panic_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        reset_screen_bg();
         let _ = execute!(
             std::io::stdout(),
             DisableMouseCapture,
@@ -81,12 +83,50 @@ pub(crate) fn emit_notification(msg: &str) {
     let _ = out.flush();
 }
 
+/// The default dark background to paint while the real theme color is unknown
+/// (before the first frame). Matches the noir theme's pane background.
+pub(crate) const INIT_BG: (u8, u8, u8) = (0x11, 0x11, 0x16);
+
+/// Set the terminal's default background color via **OSC 11**. ratatui clears the
+/// whole screen on every resize (`Clear(All)`), and the terminal fills the
+/// cleared area with *this* color — so without it, resizing flashes the
+/// terminal's own (often white) background. Reset with [`reset_screen_bg`].
+pub(crate) fn set_screen_bg(rgb: (u8, u8, u8)) {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(osc_set_bg(rgb).as_bytes());
+    let _ = out.flush();
+}
+
+/// The OSC 11 sequence that sets the terminal default background to `#rrggbb`.
+fn osc_set_bg((r, g, b): (u8, u8, u8)) -> String {
+    format!("\x1b]11;#{r:02x}{g:02x}{b:02x}\x07")
+}
+
+/// Restore the terminal's default background (OSC 111) — call on exit/panic.
+pub(crate) fn reset_screen_bg() {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(b"\x1b]111\x07");
+    let _ = out.flush();
+}
+
 /// Run the app monolithically against the real terminal (dev/escape hatch).
 fn run_local() -> Result<()> {
     let mut terminal = ratatui::init();
+    // Make every clear (resize, startup) paint dark instead of the terminal's
+    // default — often white — background.
+    set_screen_bg(INIT_BG);
+    let _ = terminal.draw(|f| {
+        let (r, g, b) = INIT_BG;
+        f.render_widget(
+            ratatui::widgets::Block::new()
+                .style(ratatui::style::Style::new().bg(ratatui::style::Color::Rgb(r, g, b))),
+            f.area(),
+        );
+    });
     let _ = execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
     install_tui_panic_hook();
     let result = run(&mut terminal);
+    reset_screen_bg();
     let _ = execute!(
         std::io::stdout(),
         DisableMouseCapture,
@@ -252,6 +292,14 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn osc_set_bg_formats_color() {
+        // OSC 11 ; #rrggbb BEL — sets the terminal default bg so resize-clears
+        // never flash white.
+        assert_eq!(osc_set_bg((0x11, 0x11, 0x16)), "\x1b]11;#111116\x07");
+        assert_eq!(osc_set_bg((0xff, 0x00, 0xab)), "\x1b]11;#ff00ab\x07");
+    }
 
     /// Render one frame of the full UI to an off-screen buffer and assert the
     /// chrome is present. Exercises App::new (real PTY spawn), the VtEngine, and
