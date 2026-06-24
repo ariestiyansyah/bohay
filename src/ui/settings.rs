@@ -177,7 +177,7 @@ fn draw_content(
                 ("Notify on blocked", toggle(n.on_blocked, t)),
                 ("Notify on done", toggle(n.on_done, t)),
                 (
-                    "Test bell",
+                    "Test notification",
                     Line::from(Span::styled("[ Send ]", Style::new().fg(t.accent).bold())),
                 ),
             ];

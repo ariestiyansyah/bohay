@@ -91,6 +91,10 @@ pub struct PaneStatus {
     pub agent_session: Option<AgentSession>,
     prev_working: bool,
     done: bool,
+    /// Whether a blocked/done bell may fire. Set false after one fires; re-armed
+    /// only when the pane is focused (seen). Stops a bursty/streaming agent —
+    /// which flaps Working↔Idle↔Done — from ringing the bell on every pause.
+    notify_armed: bool,
 }
 
 impl PaneStatus {
@@ -103,6 +107,7 @@ impl PaneStatus {
             agent_session: None,
             prev_working: false,
             done: false,
+            notify_armed: true,
         }
     }
 }
@@ -1449,6 +1454,54 @@ mod tests {
         assert!(
             app.pending_notify.is_empty(),
             "disabled notifications stay silent"
+        );
+    }
+
+    // A bursty/streaming agent flaps Working↔Idle↔Done; the bell must fire once,
+    // not on every pause — and re-arm only after the user looks at the pane.
+    #[test]
+    fn done_bell_fires_once_until_focused() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        app.config.notifications.enabled = true;
+        app.config.notifications.on_done = true;
+        let id = app.layout().focus;
+        // Treat the pane as unfocused so it can reach the Done state.
+        let bogus = PaneId::alloc();
+        app.layout_mut().focus = bogus;
+
+        let now = std::time::Instant::now();
+        let idle_at = now - ACTIVITY_WINDOW - Duration::from_millis(50);
+        let arm_working_then_idle = |app: &mut App| {
+            let s = app.status.get_mut(&id).unwrap();
+            s.state = State::Working;
+            s.prev_working = true;
+            s.last_activity = idle_at; // stale → classifies Idle → Done
+        };
+
+        // First completion rings exactly once.
+        arm_working_then_idle(&mut app);
+        app.detect_tick(now);
+        assert_eq!(app.pending_notify.len(), 1, "first completion rings once");
+
+        // Flap (working again, then idle again) does NOT re-ring — bell disarmed.
+        app.pending_notify.clear();
+        app.status.get_mut(&id).unwrap().last_activity = now; // recent → Working
+        app.detect_tick(now);
+        app.status.get_mut(&id).unwrap().last_activity = idle_at; // → Done again
+        app.detect_tick(now);
+        assert!(app.pending_notify.is_empty(), "flapping does not re-ring");
+
+        // Looking at the pane re-arms it; a later completion rings again.
+        app.layout_mut().focus = id;
+        app.detect_tick(now);
+        app.layout_mut().focus = bogus;
+        arm_working_then_idle(&mut app);
+        app.detect_tick(now);
+        assert_eq!(
+            app.pending_notify.len(),
+            1,
+            "after the user looks, a new completion rings"
         );
     }
 }

@@ -464,17 +464,94 @@ fn draw_status(f: &mut Frame, area: Rect, g: &GitView, t: &Theme) -> usize {
         Load::Idle => return 0,
     };
     let mut rows: Vec<Line> = Vec::new();
-    let group = |rows: &mut Vec<Line>, title: String, items: Vec<Line<'static>>| {
-        if items.is_empty() {
-            return;
-        }
+    let header = |rows: &mut Vec<Line>, title: String| {
         rows.push(Line::from(Span::styled(
             title,
             Style::new().fg(t.subtext1).bold(),
         )));
+    };
+    let group = |rows: &mut Vec<Line>, title: String, items: Vec<Line<'static>>| {
+        if items.is_empty() {
+            return;
+        }
+        header(rows, title);
         rows.extend(items);
         rows.push(Line::from(""));
     };
+
+    // ── Repository overview (from local git, no `gh` needed) ──
+    match &g.info {
+        Load::Loaded(info) => {
+            header(&mut rows, "Repository".to_string());
+            if let Some(slug) = &info.slug {
+                rows.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(slug.clone(), Style::new().fg(t.accent).bold()),
+                    Span::styled(
+                        format!("  {}", info.host.as_deref().unwrap_or("")),
+                        Style::new().fg(t.overlay0),
+                    ),
+                ]));
+            }
+            let url = info.remote_url.as_deref().unwrap_or("(no remote)");
+            rows.push(Line::from(Span::styled(
+                format!("   {url}"),
+                Style::new().fg(t.subtext0),
+            )));
+            let mut stats = format!("{} commits", info.total_commits);
+            if let Some(age) = &info.age {
+                stats.push_str(&format!(" · started {age}"));
+            }
+            if !info.contributors.is_empty() {
+                stats.push_str(&format!(" · {} contributors", info.contributors.len()));
+            }
+            rows.push(Line::from(Span::styled(
+                format!("   {stats}"),
+                Style::new().fg(t.subtext0),
+            )));
+            rows.push(Line::from(""));
+
+            if !info.contributors.is_empty() {
+                header(&mut rows, "Contributors".to_string());
+                let top = info
+                    .contributors
+                    .first()
+                    .map(|c| c.commits)
+                    .unwrap_or(1)
+                    .max(1);
+                for c in info.contributors.iter().take(15) {
+                    let bar = (c.commits as usize * 12 / top as usize).max(1);
+                    rows.push(Line::from(vec![
+                        Span::styled(format!("   {}", pad(&c.name, 18)), Style::new().fg(t.text)),
+                        Span::styled(format!("{:>4}  ", c.commits), Style::new().fg(t.accent)),
+                        Span::styled("█".repeat(bar), Style::new().fg(t.green)),
+                        Span::styled(
+                            format!("  {}", trunc(&c.email, 26)),
+                            Style::new().fg(t.overlay0),
+                        ),
+                    ]));
+                }
+                if info.contributors.len() > 15 {
+                    rows.push(Line::from(Span::styled(
+                        format!("   … +{} more", info.contributors.len() - 15),
+                        Style::new().fg(t.overlay0),
+                    )));
+                }
+                rows.push(Line::from(""));
+            }
+        }
+        Load::Loading => {
+            rows.push(Line::from(Span::styled(
+                "Repository  loading…",
+                Style::new().fg(t.overlay0),
+            )));
+            rows.push(Line::from(""));
+        }
+        _ => {}
+    }
+
+    // ── Working tree ──
+    let clean = s.dirty_count() == 0 && s.stashes.is_empty();
     group(
         &mut rows,
         format!("Staged ({})", s.staged.len()),
@@ -507,10 +584,14 @@ fn draw_status(f: &mut Frame, area: Rect, g: &GitView, t: &Theme) -> usize {
             .map(|p| Line::from(Span::styled(format!("   {p}"), Style::new().fg(t.subtext0))))
             .collect(),
     );
-    if rows.is_empty() {
-        message(f, area, "working tree clean ✓", t.green);
-        return 0;
+    if clean {
+        header(&mut rows, "Working tree".to_string());
+        rows.push(Line::from(Span::styled(
+            "   clean ✓",
+            Style::new().fg(t.green),
+        )));
     }
+
     // Status isn't row-selectable; render from the top with the scroll offset.
     let avail = area.height as usize;
     let scroll = g.scroll.min(rows.len().saturating_sub(avail));

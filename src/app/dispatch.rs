@@ -46,6 +46,8 @@ impl App {
                 if focused {
                     s.seen = true;
                     s.done = false;
+                    // Looking at the pane re-arms its bell for the next event.
+                    s.notify_armed = true;
                 }
                 if s.prev_working && det.state == State::Idle && !focused {
                     s.done = true;
@@ -79,8 +81,12 @@ impl App {
                 "pane.agent_status_changed",
                 json!({ "pane": id.0.to_string(), "status": state_str(st), "agent": agent }),
             );
-            // Queue a bell/desktop notification on the configured transitions.
+            // Queue a bell/desktop notification on the configured transitions —
+            // but only if this pane's bell is armed, so a streaming agent that
+            // flaps in and out of Done doesn't ring on every pause.
+            let armed = self.status.get(&id).is_some_and(|s| s.notify_armed);
             let wanted = notify_on
+                && armed
                 && match st {
                     State::Blocked => on_blocked,
                     State::Done => on_done,
@@ -98,6 +104,10 @@ impl App {
                     format!("{agent} {} · {proj}", state_str(st))
                 };
                 self.pending_notify.push(msg);
+                // Disarm until the user focuses this pane again.
+                if let Some(s) = self.status.get_mut(&id) {
+                    s.notify_armed = false;
+                }
             }
         }
     }

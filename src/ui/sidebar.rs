@@ -101,32 +101,39 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) 
         }
     };
 
-    // Brand.
-    line_at(
-        f,
+    // Settings/Menu button — a labelled pill at the right of the brand row
+    // (inverts on hover) so it's an obvious, tappable control. Text beats a lone
+    // glyph for discoverability.
+    let menu_label = " Menu ";
+    let menu_w = menu_label.chars().count() as u16;
+    let menu = Rect::new(
+        area.right().saturating_sub(menu_w + 1),
         area.y + 1,
-        Line::from(vec![
-            Span::styled("❯ ", Style::new().fg(t.accent).bold()),
-            Span::styled("bohay", Style::new().fg(t.text).bold()),
-            Span::styled("  v0.1", Style::new().fg(t.overlay0)),
-        ]),
+        menu_w,
+        1,
     );
-    // Settings gear — a pill button at the right of the brand row (inverts on
-    // hover), so it reads as a clear, tappable control rather than a tiny glyph.
-    let gear = Rect::new(area.right().saturating_sub(4), area.y + 1, 3, 1);
-    let gear_hover = app
+    // Brand (drop the version when it would collide with the wider Menu pill).
+    let mut brand = vec![
+        Span::styled("❯ ", Style::new().fg(t.accent).bold()),
+        Span::styled("bohay", Style::new().fg(t.text).bold()),
+    ];
+    if cx + 7 + 6 < menu.x {
+        brand.push(Span::styled("  v0.1", Style::new().fg(t.overlay0)));
+    }
+    line_at(f, area.y + 1, Line::from(brand));
+    let menu_hover = app
         .hover
-        .is_some_and(|(c, r)| c >= gear.x && c < gear.right() && r == gear.y);
-    let (fg, bg) = if gear_hover {
+        .is_some_and(|(c, r)| c >= menu.x && c < menu.right() && r == menu.y);
+    let (fg, bg) = if menu_hover {
         (t.crust, t.accent)
     } else {
         (t.accent, t.surface1)
     };
     f.render_widget(
-        Paragraph::new(Span::styled(" ⚙ ", Style::new().fg(fg).bg(bg).bold())),
-        gear,
+        Paragraph::new(Span::styled(menu_label, Style::new().fg(fg).bg(bg).bold())),
+        menu,
     );
-    app.settings_icon_rect = Some(gear);
+    app.settings_icon_rect = Some(menu);
 
     // Two stacked halves: NODES (top) and AGENTS (bottom), with a divider.
     let body_top = area.y + 3;

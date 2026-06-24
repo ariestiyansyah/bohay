@@ -6,41 +6,23 @@ use std::path::Path;
 use std::thread;
 
 use anyhow::{anyhow, Result};
+use ratatui::crossterm::cursor::Hide;
 use ratatui::crossterm::event::{
     read as read_event, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
     EnableMouseCapture, Event,
 };
 use ratatui::crossterm::execute;
-use ratatui::style::{Color, Style};
-use ratatui::widgets::Block;
 use ratatui::DefaultTerminal;
 
 use crate::ipc::protocol::{self, ClientMessage, FrameData, ServerMessage};
 use crate::ipc::transport::{self, Conn};
 
-fn init_bg_color() -> Color {
-    let (r, g, b) = crate::INIT_BG;
-    Color::Rgb(r, g, b)
-}
-
 pub fn run(sock: &Path) -> Result<()> {
     let stream = transport::connect(sock).map_err(|_| anyhow!("cannot connect to bohay server"))?;
     let mut terminal = ratatui::init();
-    // Set the terminal's default background dark BEFORE the first draw, so
-    // ratatui's clear-on-resize (and the alt-screen) never flash the terminal's
-    // own (often white) background. Then paint a dark frame to cover the gap
-    // before the server's first frame.
-    crate::set_screen_bg(crate::INIT_BG);
-    let _ = terminal.draw(|f| {
-        f.render_widget(
-            Block::new().style(Style::new().bg(init_bg_color())),
-            f.area(),
-        );
-    });
     let _ = execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
     crate::install_tui_panic_hook();
     let result = run_inner(stream, &mut terminal);
-    crate::reset_screen_bg();
     let _ = execute!(
         std::io::stdout(),
         DisableMouseCapture,
@@ -74,21 +56,9 @@ fn run_inner(stream: Conn, terminal: &mut DefaultTerminal) -> Result<()> {
     thread::spawn(move || input_loop(writer));
 
     // Main thread: blit frames as they arrive.
-    let mut screen_bg = crate::INIT_BG;
     loop {
         match protocol::read_message::<_, ServerMessage>(&mut reader) {
-            Ok(ServerMessage::Frame(frame)) => {
-                // Keep the terminal's clear color in sync with the app's actual
-                // background (so a theme change / light theme is honored on the
-                // next resize-clear too).
-                if let Some(bg) = frame_base_rgb(&frame) {
-                    if bg != screen_bg {
-                        crate::set_screen_bg(bg);
-                        screen_bg = bg;
-                    }
-                }
-                blit(terminal, &frame, truecolor)?;
-            }
+            Ok(ServerMessage::Frame(frame)) => blit(terminal, &frame, truecolor)?,
             Ok(ServerMessage::Notify(msg)) => crate::emit_notification(&msg),
             Ok(ServerMessage::Detach) | Ok(ServerMessage::ServerShutdown { .. }) => break,
             Ok(_) => {}
@@ -96,16 +66,6 @@ fn run_inner(stream: Conn, terminal: &mut DefaultTerminal) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The app's background as an RGB triple, from the frame's top-left cell — used
-/// to keep the terminal's clear color (OSC 11) in sync with the theme. `None`
-/// for non-RGB (e.g. a 256-color downsample), leaving the dark default in place.
-fn frame_base_rgb(frame: &FrameData) -> Option<(u8, u8, u8)> {
-    match protocol::unpack(frame.cells.first()?.bg) {
-        Color::Rgb(r, g, b) => Some((r, g, b)),
-        _ => None,
-    }
 }
 
 fn input_loop(mut writer: Conn) {
@@ -126,17 +86,15 @@ fn input_loop(mut writer: Conn) {
 
 fn blit(terminal: &mut DefaultTerminal, frame: &FrameData, truecolor: bool) -> Result<()> {
     let adjust = |c| if truecolor { c } else { protocol::to_256(c) };
-    // The app's background, taken from the top-left cell. Used to fill any area
-    // the frame doesn't cover (e.g. the newly-exposed strip mid-resize, before
-    // the server sends a frame at the new size) so it never flashes white.
-    let fill = frame
-        .cells
-        .first()
-        .map(|c| adjust(protocol::unpack(c.bg)))
-        .unwrap_or_else(init_bg_color);
+    // Hide the cursor before the diff is written. ratatui flushes the changed
+    // cells *before* it repositions the cursor, so an on-screen cursor would
+    // visibly dart across every cell it writes — barely noticeable for a small
+    // update, but a full-screen flicker when many panes change at once (e.g. a
+    // multi-agent session restore). ratatui re-shows it at the focus position
+    // at the end of the draw.
+    let _ = execute!(std::io::stdout(), Hide);
     terminal.draw(|f| {
         let area = f.area();
-        f.render_widget(Block::new().style(Style::new().bg(fill)), area);
         let buf = f.buffer_mut();
         for (i, cell) in frame.cells.iter().enumerate() {
             let x = (i as u16) % frame.width;

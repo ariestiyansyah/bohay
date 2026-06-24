@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use super::model::{BranchInfo, Commit, FileChange, RepoStatus};
+use super::model::{BranchInfo, Commit, Contributor, FileChange, RepoInfo, RepoStatus};
 
 /// Run `git <args>` in `cwd`, returning stdout (trimmed of a trailing newline).
 fn run(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -176,4 +176,111 @@ pub fn commits(cwd: &Path, n: usize, all: bool) -> Result<Vec<Commit>, String> {
 /// Checkout a branch (mutating). Used by the Branches view's `enter`.
 pub fn checkout(cwd: &Path, branch: &str) -> Result<(), String> {
     run(cwd, &["switch", branch]).map(|_| ())
+}
+
+/// Repository overview for the Status tab: remote, commit count, age, and the
+/// contributor list. All optional — a repo with no remote/history still works.
+pub fn repo_info(cwd: &Path) -> Result<RepoInfo, String> {
+    let remote_url = run(cwd, &["remote", "get-url", "origin"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (host, slug) = remote_url
+        .as_deref()
+        .map(parse_remote)
+        .unwrap_or((None, None));
+    let total_commits = run(cwd, &["rev-list", "--count", "HEAD"])
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let age = run(
+        cwd,
+        &["log", "--reverse", "--format=%cr", "--max-parents=0"],
+    )
+    .ok()
+    .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+    .filter(|s| !s.is_empty());
+    let contributors = run(cwd, &["shortlog", "-s", "-n", "-e", "HEAD"])
+        .map(|out| parse_contributors(&out))
+        .unwrap_or_default();
+    Ok(RepoInfo {
+        remote_url,
+        slug,
+        host,
+        total_commits,
+        age,
+        contributors,
+    })
+}
+
+/// `(host, owner/repo)` from a git remote URL (`git@github.com:o/r.git` or
+/// `https://github.com/o/r.git`). Either part is `None` if it doesn't parse.
+fn parse_remote(url: &str) -> (Option<String>, Option<String>) {
+    // Normalize scp-like `git@host:owner/repo` to `host/owner/repo`.
+    let body = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ssh://"))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| url.replacen(':', "/", 1));
+    // Drop any `user@` and the trailing `.git`.
+    let body = body.rsplit('@').next().unwrap_or(&body);
+    let body = body
+        .strip_suffix(".git")
+        .unwrap_or(body)
+        .trim_end_matches('/');
+    let mut parts = body.splitn(2, '/');
+    let host = parts.next().filter(|h| !h.is_empty()).map(str::to_string);
+    let slug = parts.next().filter(|s| s.contains('/')).map(str::to_string);
+    (host, slug)
+}
+
+/// Parse `git shortlog -s -n -e` lines: `<count>\t<name> <<email>>`.
+fn parse_contributors(out: &str) -> Vec<Contributor> {
+    out.lines()
+        .filter_map(|line| {
+            let (count, rest) = line.trim_start().split_once('\t')?;
+            let commits: u32 = count.trim().parse().ok()?;
+            let (name, email) = match rest.rsplit_once(" <") {
+                Some((n, e)) => (n.trim().to_string(), e.trim_end_matches('>').to_string()),
+                None => (rest.trim().to_string(), String::new()),
+            };
+            Some(Contributor {
+                name,
+                email,
+                commits,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_remote_forms() {
+        assert_eq!(
+            parse_remote("git@github.com:owner/repo.git"),
+            (Some("github.com".into()), Some("owner/repo".into()))
+        );
+        assert_eq!(
+            parse_remote("https://github.com/owner/repo.git"),
+            (Some("github.com".into()), Some("owner/repo".into()))
+        );
+        assert_eq!(
+            parse_remote("https://gitlab.com/group/sub/repo"),
+            (Some("gitlab.com".into()), Some("group/sub/repo".into()))
+        );
+    }
+
+    #[test]
+    fn parses_shortlog() {
+        let out = "     8\tAda <ada@x.com>\n     3\tLin <lin@y.com>\n";
+        let c = parse_contributors(out);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].name, "Ada");
+        assert_eq!(c[0].email, "ada@x.com");
+        assert_eq!(c[0].commits, 8);
+    }
 }

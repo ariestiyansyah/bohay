@@ -117,6 +117,7 @@ impl App {
             send(GitPayload::Status(local::status(&root)));
             send(GitPayload::Branches(local::branches(&root)));
             send(GitPayload::Commits(local::commits(&root, 100, false)));
+            send(GitPayload::Info(local::repo_info(&root)));
             // GitHub data (GIT-2/5) — only if `gh` is installed + authenticated.
             let gh = github::detect();
             send(GitPayload::Gh(gh));
@@ -131,6 +132,7 @@ impl App {
         if let Some(g) = self.active_git_mut() {
             let (id, root, scope) = (g.id, g.repo_root.clone(), g.scope);
             g.status = Load::Loading;
+            g.info = Load::Loading;
             g.branches = Load::Loading;
             g.commits = Load::Loading;
             g.prs = Load::Idle;

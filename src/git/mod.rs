@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use github::GhState;
 pub use model::Checks;
-use model::{BranchInfo, Commit, Issue, PullRequest, RepoStatus};
+use model::{BranchInfo, Commit, Issue, PullRequest, RepoInfo, RepoStatus};
 
 /// Which section of the git tab is shown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -104,6 +104,7 @@ pub enum Load<T> {
 /// Results delivered back to the loop from a fetch thread.
 pub enum GitPayload {
     Status(Result<RepoStatus, String>),
+    Info(Result<RepoInfo, String>),
     Branches(Result<Vec<BranchInfo>, String>),
     Commits(Result<Vec<Commit>, String>),
     Gh(GhState),
@@ -131,6 +132,7 @@ pub struct GitView {
     pub scope: Scope,
     pub gh: GhState,
     pub status: Load<RepoStatus>,
+    pub info: Load<RepoInfo>,
     pub branches: Load<Vec<BranchInfo>>,
     pub commits: Load<Vec<Commit>>,
     pub prs: Load<Vec<PullRequest>>,
@@ -159,6 +161,7 @@ impl GitView {
             scope: Scope::ThisRepo,
             gh: GhState::Missing,
             status: Load::Loading,
+            info: Load::Loading,
             branches: Load::Loading,
             commits: Load::Loading,
             prs: Load::Idle,
@@ -171,6 +174,7 @@ impl GitView {
     pub fn apply(&mut self, payload: GitPayload) {
         match payload {
             GitPayload::Status(r) => self.status = into_load(r),
+            GitPayload::Info(r) => self.info = into_load(r),
             GitPayload::Branches(r) => self.branches = into_load(r),
             GitPayload::Commits(r) => self.commits = into_load(r),
             GitPayload::Gh(s) => {

@@ -29,6 +29,29 @@ pub struct FileChange {
     pub path: String,
 }
 
+/// Repository overview shown on the Status tab — all from local git, so it
+/// works offline and without `gh`.
+#[derive(Clone, Default)]
+pub struct RepoInfo {
+    pub remote_url: Option<String>,
+    /// `owner/repo` parsed from the remote, if it looks like a host URL.
+    pub slug: Option<String>,
+    /// The remote host (e.g. `github.com`), if parseable.
+    pub host: Option<String>,
+    pub total_commits: u32,
+    /// First commit's relative date (e.g. "2 years ago").
+    pub age: Option<String>,
+    /// Contributors, most commits first.
+    pub contributors: Vec<Contributor>,
+}
+
+#[derive(Clone)]
+pub struct Contributor {
+    pub name: String,
+    pub email: String,
+    pub commits: u32,
+}
+
 /// A local or remote branch with its upstream tracking info.
 #[derive(Clone)]
 pub struct BranchInfo {
