@@ -16,6 +16,7 @@ use crate::ids::PaneId;
 use crate::ui::theme::{State, Theme};
 
 mod borders;
+mod git;
 mod panes;
 mod settings;
 mod sidebar;
@@ -86,15 +87,24 @@ pub fn render(f: &mut Frame, app: &mut App) {
     } else {
         None
     };
-    let cursor = panes::draw_panes(f, &rects, bordered, app, &t);
-    // Draw all pane borders in one overlay pass (manual cell-by-cell rendering),
-    // then the dot+path+close titles ON each top border row.
-    if bordered {
-        borders::render_pane_borders(f, &rects, focus, &t);
-        if app.config.layout.show_titles {
-            panes::draw_pane_titles(f, &rects, focus, app, &t);
+    // A git tab fills the pane area with its dashboard instead of terminals.
+    let mut git_section_rects = Vec::new();
+    let cursor = if let Some(g) = app.active_git_mut() {
+        git_section_rects = git::render(f, pane_area, g, &t);
+        None
+    } else {
+        let cursor = panes::draw_panes(f, &rects, bordered, app, &t);
+        // Draw all pane borders in one overlay pass (manual cell-by-cell), then
+        // the dot+path+close titles ON each top border row.
+        if bordered {
+            borders::render_pane_borders(f, &rects, focus, &t);
+            if app.config.layout.show_titles {
+                panes::draw_pane_titles(f, &rects, focus, app, &t);
+            }
         }
-    }
+        cursor
+    };
+    app.git_section_rects = git_section_rects;
     status::draw_status(f, status, app, &t);
 
     // The Settings modal draws last, on top of everything, and owns the cursor.

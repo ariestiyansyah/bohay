@@ -26,6 +26,7 @@ impl App {
                 out,
                 err,
             } => self.module_command_finished(log_id, code, out, err),
+            AppEvent::GitData { view, payload } => self.git_data(view, payload),
             // Handled by the server loop; never reaches here at runtime.
             AppEvent::ClientConnected { .. } | AppEvent::ClientDetach { .. } => {}
         }
@@ -68,6 +69,11 @@ impl App {
             }
             if hit(self.agents_area) {
                 self.agents_scroll = step(self.agents_scroll);
+                return;
+            }
+            // Wheel over a git tab scrolls its active view (docs/17).
+            if self.active_is_git() && hit(self.last_pane_area) {
+                self.git_scroll(scroll);
                 return;
             }
             // Otherwise forward scroll as arrow keys to the pane under the cursor.
@@ -127,6 +133,15 @@ impl App {
             }
             return;
         }
+        // The AGENTS All/Active filter toggle.
+        if let Some((val, _)) = self.agents_filter_rects.iter().find(|(_, rect)| hit(*rect)) {
+            let val = *val;
+            if self.agents_active_only != val {
+                self.agents_active_only = val;
+                self.agents_scroll = 0;
+            }
+            return;
+        }
         if let Some((id, _)) = self.agent_rects.iter().find(|(_, rect)| hit(*rect)) {
             let id = *id;
             self.focus_pane_global(id);
@@ -145,10 +160,24 @@ impl App {
             self.resume_session(i);
             return;
         }
+        // Clicking a node's branch opens its git tab (docs/17).
+        if let Some((i, _)) = self.node_branch_rects.iter().find(|(_, rect)| hit(*rect)) {
+            let i = *i;
+            self.open_git_tab(i);
+            return;
+        }
         if let Some((i, _)) = self.ws_rects.iter().find(|(_, rect)| hit(*rect)) {
             let i = (*i).min(self.workspaces.len().saturating_sub(1));
             self.active_ws = i;
             return;
+        }
+        // Clicking a view-selector tab in the git tab switches section (docs/17).
+        if self.active_is_git() {
+            if let Some((s, _)) = self.git_section_rects.iter().find(|(_, rect)| hit(*rect)) {
+                let s = *s;
+                self.git_click_section(s);
+                return;
+            }
         }
         if let Some((id, _)) = self.pane_rects.iter().find(|(_, rect)| hit(*rect)) {
             let id = *id;
@@ -166,6 +195,16 @@ impl App {
             self.handle_settings_key(key);
             return;
         }
+        // A focused git tab captures normal-mode keys (its own j/k/⏎/…); the
+        // `Ctrl+Space` prefix still works for global ops (switch tab/node, …).
+        if self.mode == Mode::Normal && self.active_is_git() {
+            if is_prefix(&key) {
+                self.mode = Mode::Prefix;
+            } else {
+                self.handle_git_key(key);
+            }
+            return;
+        }
         match self.mode {
             Mode::Prefix => {
                 self.mode = Mode::Normal;
@@ -179,6 +218,8 @@ impl App {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Char('d') => self.detach_requested = true,
                     KeyCode::Char('b') => self.sidebar_visible = !self.sidebar_visible,
+                    // `g` opens the git tab for the current node (docs/17).
+                    KeyCode::Char('g') => self.open_git_tab_active(),
                     // `,` opens Settings (preferences), like many apps.
                     KeyCode::Char(',') => self.open_settings(),
                     // Splits: `v` puts the new pane to the right (vertical

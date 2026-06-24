@@ -35,4 +35,9 @@ pub enum AppEvent {
         out: String,
         err: String,
     },
+    /// A git-tab fetch finished; apply it to the matching `GitView`.
+    GitData {
+        view: u64,
+        payload: crate::git::GitPayload,
+    },
 }

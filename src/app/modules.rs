@@ -229,9 +229,7 @@ impl App {
         match placement {
             "tab" => {
                 let ws = &mut self.workspaces[self.active_ws];
-                ws.tabs.push(Tab {
-                    layout: TileLayout::new(id),
-                });
+                ws.tabs.push(Tab::panes(TileLayout::new(id)));
                 ws.active_tab = ws.tabs.len() - 1;
                 self.zoomed = false;
             }

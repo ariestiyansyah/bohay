@@ -61,9 +61,17 @@ pub(super) fn draw_tabbar(f: &mut Frame, area: Rect, app: &App, t: &Theme) -> Ta
 
     let end = (scroll + max_vis).min(n);
     for i in scroll..end {
-        let num = i + 1;
+        // A git tab is labeled `⎇ git`; pane tabs are numbered.
+        let is_git = ws.tabs.get(i).is_some_and(|tb| tb.is_git());
+        let title = |w: usize| {
+            if is_git {
+                format!("{:^w$}", "⎇ git", w = w)
+            } else {
+                format!("{:^w$}", i + 1, w = w)
+            }
+        };
         if i == active {
-            let label = format!("{:^w$}", num, w = (CELL - 2) as usize);
+            let label = title((CELL - 2) as usize);
             let style = Style::new().fg(t.crust).bg(t.accent).bold();
             f.render_widget(
                 Paragraph::new(Span::styled(label, style)),
@@ -76,7 +84,7 @@ pub(super) fn draw_tabbar(f: &mut Frame, area: Rect, app: &App, t: &Theme) -> Ta
             );
             close_rects.push((i, close));
         } else {
-            let label = format!("{:^w$}", num, w = CELL as usize);
+            let label = title(CELL as usize);
             f.render_widget(
                 Paragraph::new(Span::styled(
                     label,

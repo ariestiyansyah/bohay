@@ -46,6 +46,8 @@ impl App {
                 if focused {
                     s.seen = true;
                     s.done = false;
+                    // Looking at the pane re-arms its bell for the next event.
+                    s.notify_armed = true;
                 }
                 if s.prev_working && det.state == State::Idle && !focused {
                     s.done = true;
@@ -79,8 +81,12 @@ impl App {
                 "pane.agent_status_changed",
                 json!({ "pane": id.0.to_string(), "status": state_str(st), "agent": agent }),
             );
-            // Queue a bell/desktop notification on the configured transitions.
+            // Queue a bell/desktop notification on the configured transitions —
+            // but only if this pane's bell is armed, so a streaming agent that
+            // flaps in and out of Done doesn't ring on every pause.
+            let armed = self.status.get(&id).is_some_and(|s| s.notify_armed);
             let wanted = notify_on
+                && armed
                 && match st {
                     State::Blocked => on_blocked,
                     State::Done => on_done,
@@ -98,6 +104,10 @@ impl App {
                     format!("{agent} {} · {proj}", state_str(st))
                 };
                 self.pending_notify.push(msg);
+                // Disarm until the user focuses this pane again.
+                if let Some(s) = self.status.get_mut(&id) {
+                    s.notify_armed = false;
+                }
             }
         }
     }
@@ -487,6 +497,46 @@ impl App {
                 self.close_pane(id);
                 Ok(json!({"type":"ok"}))
             }
+            // ── git (docs/17) — fast local-git reads + open the git tab ──
+            "git.status" => {
+                let cwd = self.git_node_cwd(p);
+                let s = crate::git::local::status(&cwd).map_err(git_err)?;
+                let files = |v: &[crate::git::model::FileChange]| -> Vec<Value> {
+                    v.iter()
+                        .map(|c| json!({"code": c.code.to_string(), "path": c.path}))
+                        .collect()
+                };
+                Ok(json!({
+                    "type": "git_status", "branch": s.branch, "upstream": s.upstream,
+                    "ahead": s.ahead, "behind": s.behind,
+                    "staged": files(&s.staged), "unstaged": files(&s.unstaged),
+                    "untracked": s.untracked, "stashes": s.stashes,
+                }))
+            }
+            "git.branches" => {
+                let cwd = self.git_node_cwd(p);
+                let v = crate::git::local::branches(&cwd).map_err(git_err)?;
+                let arr: Vec<Value> = v
+                    .iter()
+                    .map(|b| json!({"name": b.name, "head": b.is_head, "ahead": b.ahead, "behind": b.behind, "subject": b.subject}))
+                    .collect();
+                Ok(json!({"type":"git_branches","branches":arr}))
+            }
+            "git.log" => {
+                let cwd = self.git_node_cwd(p);
+                let n = param_usize(p, "n").unwrap_or(30);
+                let v = crate::git::local::commits(&cwd, n, false).map_err(git_err)?;
+                let arr: Vec<Value> = v
+                    .iter()
+                    .map(|c| json!({"sha": c.sha, "subject": c.subject, "author": c.author, "when": c.when, "refs": c.refs}))
+                    .collect();
+                Ok(json!({"type":"git_log","commits":arr}))
+            }
+            "git.open" => {
+                let node = param_usize(p, "node").unwrap_or(self.active_ws);
+                self.open_git_tab(node);
+                Ok(json!({"type":"ok","git": self.active_is_git()}))
+            }
             other => Err((
                 "invalid_request".to_string(),
                 format!("unknown method: {other}"),
@@ -507,10 +557,23 @@ impl App {
             None => Some(self.layout().focus),
         }
     }
+
+    /// The cwd of the `node` param (else the active node) for git.* methods.
+    fn git_node_cwd(&self, p: &Value) -> PathBuf {
+        let i = param_usize(p, "node").unwrap_or(self.active_ws);
+        self.workspaces
+            .get(i)
+            .map(|w| w.cwd.clone())
+            .unwrap_or_else(|| self.ws().cwd.clone())
+    }
 }
 
 fn not_found() -> (String, String) {
     ("not_found".to_string(), "pane not found".to_string())
+}
+
+fn git_err(e: String) -> (String, String) {
+    ("git_error".to_string(), e)
 }
 
 fn module_err(e: String) -> (String, String) {

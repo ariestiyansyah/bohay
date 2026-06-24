@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod detect;
 mod event;
+mod git;
 mod ids;
 mod integration;
 mod ipc;
@@ -26,6 +27,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use ratatui::crossterm::cursor::Hide;
 use ratatui::crossterm::event::{
     read as read_event, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
     EnableMouseCapture, Event,
@@ -69,15 +71,18 @@ pub(crate) fn install_tui_panic_hook() {
     }));
 }
 
-/// Ring the terminal bell and raise a desktop notification. `BEL` (0x07) is the
-/// universal sound; `OSC 9` raises a desktop notification on terminals that
-/// support it (iTerm2, etc.) and is ignored elsewhere.
+/// Raise a desktop notification for terminals that show one (iTerm2, etc.).
+///
+/// Deliberately emits **no terminal bell** (`BEL`, 0x07): the bell beeped and —
+/// with macOS Terminal's "visual bell" — flashed the whole screen on every agent
+/// transition, which made the UX far worse than the alert was worth. We send
+/// only `OSC 9`, terminated with `ST` (`ESC \`) rather than `BEL`, so not a
+/// single `BEL` byte reaches the terminal and nothing can flash.
 pub(crate) fn emit_notification(msg: &str) {
     use std::io::Write;
     let safe: String = msg.chars().filter(|c| !c.is_control()).take(120).collect();
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(b"\x07");
-    let _ = write!(out, "\x1b]9;{safe}\x07");
+    let _ = write!(out, "\x1b]9;{safe}\x1b\\");
     let _ = out.flush();
 }
 
@@ -223,6 +228,10 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         for msg in app.pending_notify.drain(..) {
             emit_notification(&msg);
         }
+        // Hide the cursor before the diff write so it doesn't dart across the
+        // changed cells (a flicker that scales with how much the frame changes,
+        // e.g. a multi-agent restore). ratatui re-shows it after the flush.
+        let _ = execute!(std::io::stdout(), Hide);
         terminal.draw(|f| ui::render(f, &mut app))?;
         last_draw = Instant::now();
     }

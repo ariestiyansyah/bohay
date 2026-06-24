@@ -5,7 +5,8 @@
 bohay is a client/server terminal multiplexer that runs inside your existing terminal as a
 single static Rust binary. It gives you persistent panes, tabs, and workspaces that survive
 detach; a live sidebar showing every agent's state (blocked / working / done / idle); a
-mouse-native split/resize UI; agent session resume; a tabbed settings menu (themes,
+mouse-native split/resize UI; agent session resume; a built-in **git tab** (click a branch for
+PRs, issues, branches, the commit flow, and a repo overview); a tabbed settings menu (themes,
 notifications, layout); an extension system (**modules**); and a local socket API that lets
 the agents themselves drive the multiplexer.
 
@@ -114,11 +115,11 @@ All commands are prefixed with **`Ctrl+Space`** (press it, then the key):
 Pressing `Ctrl+Space` twice sends a literal `Ctrl+Space` to the focused program. The UI is
 also fully mouse-driven — click tabs, nodes, agents, panes, the `+`/`✕` buttons, and scroll.
 
-**Settings** — click the **⚙** gear in the sidebar (or `Ctrl+Space` then `,`) for a tabbed
+**Settings** — click the **Menu** button at the top of the sidebar (or `Ctrl+Space` then `,`) for a tabbed
 dialog: **Theme** (noir / latte / mono, live preview), **Layout** (sidebar width, gaps, pane
 titles, resume placement; **on Windows**, also a **Shell** picker — PowerShell / Command
-Prompt — for new panes), **Notifications** (ring the terminal bell + a desktop notification
-when an agent gets blocked or finishes, with a **Test bell** button), **Modules** (enable /
+Prompt — for new panes), **Notifications** (a silent desktop notification — no terminal bell —
+when an agent gets blocked or finishes, with a **Test notification** button), **Modules** (enable /
 disable installed modules), and **Agents** (install the resume hook). Changes apply instantly and persist to
 `~/.bohay/config.json`. `↑↓` move, `⇥` switch tab, `←→` adjust, `⏎` apply, `esc` close.
 
@@ -197,6 +198,28 @@ manifest reference, the injected `BOHAY_*` environment, the context blob, and a 
 Actions, panes, event hooks, local/GitHub install, and GitHub-topic discovery all ship today
 (docs/13). Only an optional hosted marketplace is left — install never needs it.
 
+## Git & GitHub (the git tab)
+
+Click a node's **branch name** in the sidebar (or `Ctrl+Space g`) to open a dedicated **`⎇ git`
+tab** — a keyboard-driven dashboard of the repo:
+
+Six views — **Commits · Flow · Branches · PRs · Issues · Status** — selectable by **clicking the
+tab**, `1`–`6`, or `Tab`:
+
+- **Flow** — a GitHub-flow-style chart: the trunk as a track with branches diverging below, each
+  with its commit dots, ahead/behind, and matched PR badge + merge arrow.
+- **PRs** — status badges (`[Review]`/`[Approved]`/`[Denied]`/`[Draft]`/`[Merged]`), CI checks
+  (`✓ ✗ ●`), reviewer, branch, `+/-`. **Issues**, **Branches**, **Commits** (raw `git --graph`).
+- **Status** — a repo overview (remote URL, `owner/repo`, commit count, age, **contributor list**
+  with commit bars) plus the working tree (staged / changed / untracked / stashes).
+- `j/k` move · `/` filter · `⏎` checkout/show · `d` diff · `o` open on GitHub · `c` create PR ·
+  `m` toggle *this repo ↔ my work* (cross-repo) · `r` refresh · `q` close.
+
+Local git is read directly; GitHub data comes from the **`gh` CLI** (`gh pr list` etc.) — **no
+HTTP dependency**, and it degrades to a local-git viewer when `gh` isn't installed/authenticated.
+Agents can read it too: `bohay git status | branches | log`, `bohay git open`. See
+[`docs/17-git-integration.md`](docs/17-git-integration.md).
+
 ## Agent session resume
 
 When you reopen bohay, it **resumes each agent's native session** where you left off — with
@@ -215,7 +238,9 @@ exit), so it survives a clean quit, a detached server, or a crash.
 ### Resume from the sidebar
 
 The **AGENTS** panel in the sidebar lists not just your live agents but also recent
-**resumable sessions** discovered on disk (one per project, newest first). Click one to
+**resumable sessions** discovered on disk (one per project, newest first). The **All / Active**
+toggle at the right of the AGENTS header filters the list: **All** (default) shows live agents
+plus the session history, **Active** shows only the live agents. Click one to
 reopen it — bohay spawns a pane in that project's node (creating the node if needed) and runs
 the agent's resume command. Hover a resume row to reveal a **✕** that removes it from the list
 (it stays hidden but the actual session on disk is untouched). Both sidebar lists (NODES and
@@ -254,7 +279,7 @@ State lives in **`~/.bohay/`** (debug builds use `~/.bohay-dev/`). Override the 
 | `~/.bohay/bohay.sock` | JSON control-API socket (the CLI + agents) |
 | `~/.bohay/bohay-client.sock` | Binary render-frame socket (client ↔ server) |
 
-**Appearance & behavior.** Everything is in the **Settings** menu (the ⚙ gear, or
+**Appearance & behavior.** Everything is in the **Settings** menu (the **Menu** button, or
 `Ctrl+Space` then `,`): theme, sidebar width + pane gaps, notifications, the new-pane shell
 (Windows), agent integrations, and module enable/disable. Changes apply live and persist to
 `config.json`. The sidebar is also adjustable from the CLI — `bohay ui sidebar --width <n>`
@@ -279,7 +304,7 @@ src/
     mod.rs             render() orchestration + shared layout helpers
     borders.rs         manual cell-by-cell pane borders
     panes.rs           terminal blit + pane titles
-    sidebar.rs         NODES + AGENTS lists + the ⚙ gear
+    sidebar.rs         NODES + AGENTS lists + the Menu button
     tabbar.rs          tab bar
     status.rs          bottom status line
     settings.rs        the tabbed Settings modal

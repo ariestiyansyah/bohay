@@ -301,7 +301,7 @@ impl App {
         config::save(&self.config);
     }
 
-    /// Fire a one-off notification so the user can confirm the bell works.
+    /// Fire a one-off desktop notification so the user can confirm it works.
     /// Bypasses the enabled toggle — it's an explicit manual test.
     fn test_notification(&mut self) {
         self.pending_notify

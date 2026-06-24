@@ -101,32 +101,39 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) 
         }
     };
 
-    // Brand.
-    line_at(
-        f,
+    // Settings/Menu button — a labelled pill at the right of the brand row
+    // (inverts on hover) so it's an obvious, tappable control. Text beats a lone
+    // glyph for discoverability.
+    let menu_label = " Menu ";
+    let menu_w = menu_label.chars().count() as u16;
+    let menu = Rect::new(
+        area.right().saturating_sub(menu_w + 1),
         area.y + 1,
-        Line::from(vec![
-            Span::styled("❯ ", Style::new().fg(t.accent).bold()),
-            Span::styled("bohay", Style::new().fg(t.text).bold()),
-            Span::styled("  v0.1", Style::new().fg(t.overlay0)),
-        ]),
+        menu_w,
+        1,
     );
-    // Settings gear — a pill button at the right of the brand row (inverts on
-    // hover), so it reads as a clear, tappable control rather than a tiny glyph.
-    let gear = Rect::new(area.right().saturating_sub(4), area.y + 1, 3, 1);
-    let gear_hover = app
+    // Brand (drop the version when it would collide with the wider Menu pill).
+    let mut brand = vec![
+        Span::styled("❯ ", Style::new().fg(t.accent).bold()),
+        Span::styled("bohay", Style::new().fg(t.text).bold()),
+    ];
+    if cx + 7 + 6 < menu.x {
+        brand.push(Span::styled("  v0.1", Style::new().fg(t.overlay0)));
+    }
+    line_at(f, area.y + 1, Line::from(brand));
+    let menu_hover = app
         .hover
-        .is_some_and(|(c, r)| c >= gear.x && c < gear.right() && r == gear.y);
-    let (fg, bg) = if gear_hover {
+        .is_some_and(|(c, r)| c >= menu.x && c < menu.right() && r == menu.y);
+    let (fg, bg) = if menu_hover {
         (t.crust, t.accent)
     } else {
         (t.accent, t.surface1)
     };
     f.render_widget(
-        Paragraph::new(Span::styled(" ⚙ ", Style::new().fg(fg).bg(bg).bold())),
-        gear,
+        Paragraph::new(Span::styled(menu_label, Style::new().fg(fg).bg(bg).bold())),
+        menu,
     );
-    app.settings_icon_rect = Some(gear);
+    app.settings_icon_rect = Some(menu);
 
     // Two stacked halves: NODES (top) and AGENTS (bottom), with a divider.
     let body_top = area.y + 3;
@@ -164,6 +171,7 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) 
     app.nodes_scroll = app.nodes_scroll.min(ntotal.saturating_sub(ncap));
     app.nodes_area = Rect::new(area.x, nlist_top, area.width, nrows);
     let nscroll = app.nodes_scroll;
+    app.node_branch_rects.clear();
     for (vi, i) in (nscroll..ntotal).take(ncap).enumerate() {
         let y = nlist_top + vi as u16 * ROW_STRIDE;
         let active = i == app.active_ws;
@@ -182,10 +190,27 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) 
             Span::styled(ws.name.clone(), name_style),
         ];
         if let Some(b) = &ws.branch {
+            // Record the branch text as a clickable rect (opens the git tab).
+            let name_w = ws.name.chars().count() as u16;
+            let bx = cx + 2 + name_w;
+            let bw = 2 + b.chars().count() as u16;
+            if bx < area.right() {
+                let bw = bw.min(area.right().saturating_sub(bx));
+                app.node_branch_rects.push((i, Rect::new(bx, y, bw, 1)));
+            }
             line1.push(Span::styled(
                 format!("  {b}"),
                 Style::new().fg(if active { t.green } else { t.overlay0 }),
             ));
+            // Ahead/behind badge (set once the node's git tab fetches status).
+            if let Some((ahead, behind)) = ws.git_ahead_behind {
+                if ahead > 0 || behind > 0 {
+                    line1.push(Span::styled(
+                        format!(" ↑{ahead}↓{behind}"),
+                        Style::new().fg(t.amber),
+                    ));
+                }
+            }
         }
         line_at(f, y, Line::from(line1));
         // Row 2: the project path, indented under the name.
@@ -228,6 +253,27 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) 
     // ── AGENTS — live agents then resumable sessions, as one scrollable list ──
     let aheader = split + 1;
     line_at(f, aheader, header("AGENTS", t));
+    // All/Active filter toggle, right-aligned in the header row. "All" shows the
+    // session history too; "Active" shows only live agents.
+    app.agents_filter_rects.clear();
+    let active_only = app.agents_active_only;
+    if area.width >= 22 {
+        let segs = [(" All ", false), (" Active ", true)];
+        let total: u16 = segs.iter().map(|(l, _)| l.chars().count() as u16).sum();
+        let mut x = area.right().saturating_sub(1 + total);
+        for (label, val) in segs {
+            let w = label.chars().count() as u16;
+            let rect = Rect::new(x, aheader, w, 1);
+            let style = if active_only == val {
+                Style::new().fg(t.crust).bg(t.accent).bold()
+            } else {
+                Style::new().fg(t.overlay1).bg(t.surface1)
+            };
+            f.render_widget(Paragraph::new(Span::styled(label, style)), rect);
+            app.agents_filter_rects.push((val, rect));
+            x = x.saturating_add(w);
+        }
+    }
     let alist_top = aheader + 1;
     let arows = area.bottom().saturating_sub(alist_top);
     let acap = list_capacity(arows);
@@ -247,7 +293,12 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) 
             }
         }
     }
-    let atotal = live.len() + app.resumable.len();
+    // In "Active" mode, hide the on-disk resumable session history.
+    let atotal = if active_only {
+        live.len()
+    } else {
+        live.len() + app.resumable.len()
+    };
     app.agents_scroll = app.agents_scroll.min(atotal.saturating_sub(acap));
     let ascroll = app.agents_scroll;
 
@@ -256,7 +307,11 @@ pub(super) fn draw_sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) 
             f,
             alist_top,
             Line::from(Span::styled(
-                "no active agents",
+                if active_only {
+                    "no active agents"
+                } else {
+                    "no agents or sessions"
+                },
                 Style::new().fg(t.overlay0),
             )),
         );
@@ -367,4 +422,52 @@ fn header(text: &str, t: &Theme) -> Line<'static> {
         text.to_string(),
         Style::new().fg(t.overlay1).bold(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn buffer_contains(term: &Terminal<TestBackend>, needle: &str) -> bool {
+        let buf = term.backend().buffer();
+        (0..buf.area.height).any(|r| {
+            (0..buf.area.width)
+                .map(|c| buf.cell((c, r)).map(|x| x.symbol()).unwrap_or(" "))
+                .collect::<String>()
+                .contains(needle)
+        })
+    }
+
+    #[test]
+    fn agents_all_active_toggle_filters_history() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        // One resumable session in the on-disk history (no live agents by default).
+        app.resumable = vec![crate::agent::SessionInfo {
+            agent: "claude".into(),
+            session_id: "abc".into(),
+            cwd: std::path::PathBuf::from("/tmp/proj"),
+            updated: std::time::SystemTime::UNIX_EPOCH,
+        }];
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        // Default = All: the toggle is drawn and the history row shows.
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert_eq!(app.agents_filter_rects.len(), 2, "All/Active toggle drawn");
+        assert!(buffer_contains(&term, "Active"), "toggle label present");
+        assert!(
+            buffer_contains(&term, "resume"),
+            "All shows session history"
+        );
+
+        // Active-only: the history row is hidden.
+        app.agents_active_only = true;
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(
+            !buffer_contains(&term, "resume"),
+            "Active hides session history"
+        );
+    }
 }
