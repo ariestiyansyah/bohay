@@ -115,24 +115,37 @@ fn draw_content(
     let mut arrows = Vec::new();
     match tab {
         SettingsTab::Theme => {
-            for (i, name) in theme::THEMES.iter().enumerate() {
-                let row = Rect::new(area.x, area.y + i as u16, area.width, 1);
-                if row.y >= area.bottom() {
-                    break;
-                }
+            // Scroll the list so the selected theme is always visible (there are
+            // more palettes than fit a short modal).
+            let avail = area.height.max(1) as usize;
+            let total = theme::THEMES.len();
+            let scroll = cursor
+                .saturating_sub(avail.saturating_sub(1))
+                .min(total.saturating_sub(avail));
+            for (vi, i) in (scroll..total).take(avail).enumerate() {
+                let name = theme::THEMES[i];
+                let row = Rect::new(area.x, area.y + vi as u16, area.width, 1);
                 let sel = i == cursor;
                 if sel {
                     fill_bg(f, row, t.sel_bg);
                 }
-                let pal = theme::by_name(name);
+                // One swatch — a solid block of the theme's *own* accent (its main
+                // color). `by_name` returns full RGB; downsample it to 256 when
+                // the active theme is (i.e. on non-truecolor terminals) so it
+                // renders the right color instead of a mangled truecolor escape.
+                let mut swatch = theme::by_name(name).accent;
+                if app.downsample {
+                    swatch = crate::ipc::protocol::to_256(swatch);
+                }
                 f.render_widget(
                     Paragraph::new(Line::from(vec![
                         Span::styled(if sel { " ▸ " } else { "   " }, Style::new().fg(t.accent)),
                         Span::styled(
-                            format!("{name:<7}"),
+                            format!("{name:<9}"),
                             Style::new().fg(if sel { t.text } else { t.subtext1 }),
                         ),
-                        Span::styled("███  ", Style::new().fg(pal.accent)),
+                        Span::styled("    ", Style::new().bg(swatch)),
+                        Span::raw("  "),
                         Span::styled(theme::describe(name), Style::new().fg(t.overlay0)),
                     ])),
                     row,

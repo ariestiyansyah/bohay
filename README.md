@@ -116,7 +116,7 @@ Pressing `Ctrl+Space` twice sends a literal `Ctrl+Space` to the focused program.
 also fully mouse-driven — click tabs, nodes, agents, panes, the `+`/`✕` buttons, and scroll.
 
 **Settings** — click the **Menu** button at the top of the sidebar (or `Ctrl+Space` then `,`) for a tabbed
-dialog: **Theme** (noir / latte / mono, live preview), **Layout** (sidebar width, gaps, pane
+dialog: **Theme** (10 palettes — noir, ocean, dracula, nord, sunset, homebrew, grass, red sands, latte, mono — with live preview), **Layout** (sidebar width, gaps, pane
 titles, resume placement; **on Windows**, also a **Shell** picker — PowerShell / Command
 Prompt — for new panes), **Notifications** (a silent desktop notification — no terminal bell —
 when an agent gets blocked or finishes, with a **Test notification** button), **Modules** (enable /
@@ -308,7 +308,7 @@ src/
     tabbar.rs          tab bar
     status.rs          bottom status line
     settings.rs        the tabbed Settings modal
-    theme.rs           color palettes (noir / latte / mono)
+    theme.rs           color palettes (noir, ocean, dracula, nord, sunset, homebrew, grass, red sands, latte, mono)
   module/            extension system (docs/13): manifest, registry, paths,
                      context, runtime, install, discovery
   terminal/          PTY actor (pty) + pure-Rust VT engine (vt/)

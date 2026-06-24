@@ -1276,7 +1276,7 @@ mod tests {
             KeyCode::Down,
             KeyModifiers::NONE,
         )));
-        assert_eq!(app.config.theme, "latte");
+        assert_eq!(app.config.theme, crate::ui::theme::THEMES[1]); // next after noir
 
         let click = |app: &mut App, x, y| {
             app.handle_event(AppEvent::Mouse(MouseEvent {
