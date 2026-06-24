@@ -199,13 +199,47 @@ fn draw_content(
             }
         }
         SettingsTab::Modules => {
-            f.render_widget(
-                Paragraph::new(Span::styled(
-                    "   No modules installed.",
-                    Style::new().fg(t.overlay0),
-                )),
-                Rect::new(area.x, area.y, area.width, 1),
-            );
+            if app.modules.modules.is_empty() {
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        "   No modules installed — `bohay module link <dir>`.",
+                        Style::new().fg(t.overlay0),
+                    )),
+                    Rect::new(area.x, area.y, area.width, 1),
+                );
+            } else {
+                for (i, m) in app.modules.modules.iter().enumerate() {
+                    let row = Rect::new(area.x, area.y + i as u16, area.width, 1);
+                    if row.y >= area.bottom() {
+                        break;
+                    }
+                    let sel = i == cursor;
+                    if sel {
+                        fill_bg(f, row, t.sel_bg);
+                    }
+                    // name + a hint (action count, or a ⚠ for a load warning)
+                    let hint = if m.warning.is_some() {
+                        " ⚠ unavailable".to_string()
+                    } else {
+                        format!(" · {} action(s)", m.manifest.actions.len())
+                    };
+                    f.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(
+                                format!("  {}", m.id),
+                                Style::new().fg(if sel { t.text } else { t.subtext1 }),
+                            ),
+                            Span::styled(hint, Style::new().fg(t.overlay0)),
+                        ])),
+                        row,
+                    );
+                    f.render_widget(
+                        Paragraph::new(toggle(m.enabled, t)).alignment(Alignment::Right),
+                        Rect::new(row.x, row.y, row.width.saturating_sub(2), 1),
+                    );
+                    ctls.push((i, row));
+                }
+            }
         }
     }
     (ctls, arrows)

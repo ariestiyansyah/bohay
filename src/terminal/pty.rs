@@ -28,6 +28,7 @@ pub struct Pane {
 }
 
 impl Pane {
+    /// Spawn an interactive shell pane.
     pub fn spawn(
         id: PaneId,
         cols: u16,
@@ -37,6 +38,63 @@ impl Pane {
         initial: Option<&str>,
         shell: &str,
     ) -> Result<Pane> {
+        let cmd = CommandBuilder::new(shell);
+        Self::build(
+            id,
+            cols,
+            rows,
+            cwd,
+            app_tx,
+            initial,
+            cmd,
+            basename(shell),
+            &[],
+        )
+    }
+
+    /// Spawn a pane running an explicit argv with extra environment — a module
+    /// pane (docs/13 MOD-2). bohay's own identity vars always win over `env`.
+    pub fn spawn_command(
+        id: PaneId,
+        cols: u16,
+        rows: u16,
+        cwd: PathBuf,
+        app_tx: Sender<AppEvent>,
+        argv: &[String],
+        env: &[(String, String)],
+    ) -> Result<Pane> {
+        let Some((program, args)) = argv.split_first() else {
+            return Err(anyhow::anyhow!("empty module command"));
+        };
+        let mut cmd = CommandBuilder::new(program);
+        for a in args {
+            cmd.arg(a);
+        }
+        Self::build(
+            id,
+            cols,
+            rows,
+            cwd,
+            app_tx,
+            None,
+            cmd,
+            basename(program),
+            env,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        id: PaneId,
+        cols: u16,
+        rows: u16,
+        cwd: PathBuf,
+        app_tx: Sender<AppEvent>,
+        initial: Option<&str>,
+        mut cmd: CommandBuilder,
+        command: String,
+        extra_env: &[(String, String)],
+    ) -> Result<Pane> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows: rows.max(1),
@@ -45,8 +103,12 @@ impl Pane {
             pixel_height: 0,
         })?;
 
-        let mut cmd = CommandBuilder::new(shell);
         cmd.cwd(&cwd);
+        // Caller-supplied env first, then bohay's identity vars (so they can't
+        // be overridden — no spoofing the module/pane identity).
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("BOHAY_ENV", "1");
         cmd.env("BOHAY_PANE_ID", id.0.to_string());
@@ -94,12 +156,6 @@ impl Pane {
             let _ = app_tx.send(AppEvent::PtyExit(id));
         });
 
-        let command = std::path::Path::new(shell)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(shell)
-            .to_string();
-
         Ok(Pane {
             engine,
             child_pid,
@@ -130,6 +186,15 @@ impl Pane {
         }
         self.size = (cols, rows);
     }
+}
+
+/// The file-name component of a program path, for the pane's display command.
+fn basename(s: &str) -> String {
+    std::path::Path::new(s)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(s)
+        .to_string()
 }
 
 fn read_loop(

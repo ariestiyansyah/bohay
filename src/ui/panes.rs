@@ -83,7 +83,10 @@ fn draw_one_pane(
     // Bordered panes instead get their dot+path+close as a title ON the top
     // border row (see `draw_pane_titles`), so it touches the tab bar.
     if !bordered {
-        let header = Rect::new(area.x, area.y, area.width, 1);
+        // Match the content's horizontal pad so the header bar aligns with the
+        // tab bar and the terminal text below it.
+        let pad = lone_pad(area.width);
+        let header = Rect::new(area.x + pad, area.y, area.width.saturating_sub(2 * pad), 1);
         let hbg = if focused { t.surface1 } else { t.surface0 };
         let path_fg = if focused { t.accent } else { t.overlay1 };
         f.render_widget(Block::new().style(Style::new().bg(hbg)), header);

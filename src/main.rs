@@ -12,6 +12,7 @@ mod ids;
 mod integration;
 mod ipc;
 mod layout;
+mod module;
 mod persist;
 mod platform;
 mod terminal;

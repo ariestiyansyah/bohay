@@ -85,7 +85,7 @@ impl App {
             SettingsTab::Theme => theme::THEMES.len(),
             SettingsTab::Layout => LAYOUT_ROWS,
             SettingsTab::Notifications => 4,
-            SettingsTab::Modules => 0,
+            SettingsTab::Modules => self.modules.modules.len(),
             SettingsTab::Integrations => crate::integration::AGENTS.len(),
         }
     }
@@ -203,7 +203,7 @@ impl App {
             SettingsTab::Notifications if cursor < 3 => self.toggle_notify(cursor),
             SettingsTab::Notifications => {} // the Test row only reacts to Enter/click
             SettingsTab::Integrations => self.settings_activate(cursor),
-            SettingsTab::Modules => {}
+            SettingsTab::Modules => self.toggle_module(cursor),
         }
     }
 
@@ -219,7 +219,15 @@ impl App {
             SettingsTab::Notifications if cursor == 3 => self.test_notification(),
             SettingsTab::Notifications => self.toggle_notify(cursor),
             SettingsTab::Integrations => self.install_integration(cursor),
-            SettingsTab::Modules => {}
+            SettingsTab::Modules => self.toggle_module(cursor),
+        }
+    }
+
+    /// Enable/disable the module at `cursor` in the Modules tab.
+    fn toggle_module(&mut self, cursor: usize) {
+        if let Some(m) = self.modules.modules.get(cursor) {
+            let (id, on) = (m.id.clone(), !m.enabled);
+            let _ = self.module_set_enabled(&id, on);
         }
     }
 

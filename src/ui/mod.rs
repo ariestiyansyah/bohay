@@ -158,16 +158,32 @@ fn pane_inner(rect: Rect, bordered: bool) -> Option<Rect> {
     ))
 }
 
+/// Horizontal breathing room for a lone (border-less) pane, so its header and
+/// terminal content line up with the tab bar's left edge (`area.x + 1`) instead
+/// of touching the sidebar. Split panes get spacing from their borders instead.
+pub(super) const LONE_PANE_HPAD: u16 = 1;
+
+/// The lone-pane horizontal pad, suppressed for panes too narrow to spare it.
+pub(super) fn lone_pad(width: u16) -> u16 {
+    if width > 2 * LONE_PANE_HPAD + 2 {
+        LONE_PANE_HPAD
+    } else {
+        0
+    }
+}
+
 /// The terminal content area: inside the box when bordered (the dot+path+close
-/// live on the top border row as a title), else just below the header row.
+/// live on the top border row as a title), else just below the header row with a
+/// small horizontal pad so it aligns with the tab bar.
 fn pane_content(rect: Rect, bordered: bool) -> Option<Rect> {
     if bordered {
         return pane_inner(rect, true);
     }
+    let pad = lone_pad(rect.width);
     let c = Rect::new(
-        rect.x,
+        rect.x + pad,
         rect.y + 1,
-        rect.width,
+        rect.width.saturating_sub(2 * pad),
         rect.height.saturating_sub(1),
     );
     if c.width < 1 || c.height < 1 {

@@ -28,4 +28,11 @@ pub enum AppEvent {
     ClientDetach {
         id: u64,
     },
+    /// A module subprocess finished; fill in its log entry.
+    ModuleCommandFinished {
+        log_id: u64,
+        code: Option<i32>,
+        out: String,
+        err: String,
+    },
 }

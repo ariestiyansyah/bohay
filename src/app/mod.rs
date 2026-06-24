@@ -23,15 +23,16 @@ use crate::ui::theme::{State, Theme};
 
 mod dispatch;
 mod input;
+mod modules;
 mod settings;
 
 pub use settings::{SettingsTab, SettingsUi};
 
 const ACTIVITY_WINDOW: Duration = Duration::from_millis(700);
 
-/// Sidebar width in columns. `sidebar_width` is adjustable at runtime (and will
-/// be exposed in settings); these bound it. Colors are the `Theme` (also to be
-/// settings-customizable — see docs/15).
+/// Sidebar width in columns. `sidebar_width` is adjustable at runtime and in the
+/// Settings → Layout tab; these bound it. Colors come from the `Theme`, also
+/// selectable in Settings → Theme (see docs/15).
 pub const SIDEBAR_WIDTH_DEFAULT: u16 = 26;
 pub const SIDEBAR_WIDTH_MIN: u16 = 18;
 pub const SIDEBAR_WIDTH_MAX: u16 = 44;
@@ -161,6 +162,11 @@ pub struct App {
     pub settings_ctl_rects: Vec<(usize, Rect)>,
     /// Slider arrows in the modal: (control index, ±1 direction, rect).
     pub settings_arrow_rects: Vec<(usize, i32, Rect)>,
+    /// Installed modules (docs/13) and the ring buffer of their command logs.
+    pub modules: crate::module::ModuleRegistry,
+    pub module_logs: Vec<crate::module::ModuleCommandLog>,
+    /// Live module panes by pane id, untracked automatically on close (MOD-2).
+    pub module_panes: HashMap<PaneId, crate::module::ModulePaneRecord>,
 }
 
 impl App {
@@ -239,6 +245,9 @@ impl App {
             settings_tab_rects: Vec::new(),
             settings_ctl_rects: Vec::new(),
             settings_arrow_rects: Vec::new(),
+            modules: crate::module::registry::load(),
+            module_logs: Vec::new(),
+            module_panes: HashMap::new(),
         })
     }
 
@@ -255,8 +264,10 @@ impl App {
     fn from_snapshot(snap: SessionSnapshot, app_tx: Sender<AppEvent>) -> Option<App> {
         let config = crate::config::load();
         let shell = crate::platform::resolve_shell(&config.shell);
+        let modules = crate::module::registry::load();
         let mut panes = HashMap::new();
         let mut status = HashMap::new();
+        let mut module_panes: HashMap<PaneId, crate::module::ModulePaneRecord> = HashMap::new();
         let mut workspaces = Vec::new();
         for ws in snap.workspaces {
             let mut tabs = Vec::new();
@@ -264,16 +275,31 @@ impl App {
                 let mut remap = HashMap::new();
                 for (raw, ps) in &tab.panes {
                     let id = PaneId::alloc();
-                    let pane = Pane::spawn(
-                        id,
-                        80,
-                        24,
-                        ps.cwd.clone(),
-                        app_tx.clone(),
-                        ps.screen.as_deref(),
-                        &shell,
-                    )
-                    .ok()?;
+                    // A module pane re-runs its entrypoint if the module is still
+                    // installed + runnable; otherwise it falls back to a shell.
+                    let restored = ps
+                        .module
+                        .as_ref()
+                        .and_then(|(mid, ep)| restore_module_pane(&modules, mid, ep, id, &app_tx));
+                    let (pane, module_rec) = match restored {
+                        Some((p, rec)) => (p, Some(rec)),
+                        None => (
+                            Pane::spawn(
+                                id,
+                                80,
+                                24,
+                                ps.cwd.clone(),
+                                app_tx.clone(),
+                                ps.screen.as_deref(),
+                                &shell,
+                            )
+                            .ok()?,
+                            None,
+                        ),
+                    };
+                    if let Some(rec) = module_rec {
+                        module_panes.insert(id, rec);
+                    }
                     let cmd = pane.command.clone();
                     let mut st = PaneStatus::new(cmd);
                     // Resume the native agent session captured at save time (a
@@ -366,6 +392,9 @@ impl App {
             settings_tab_rects: Vec::new(),
             settings_ctl_rects: Vec::new(),
             settings_arrow_rects: Vec::new(),
+            modules,
+            module_logs: Vec::new(),
+            module_panes,
         })
     }
 
@@ -424,6 +453,10 @@ impl App {
                 self.status.insert(id, PaneStatus::new(cmd));
                 self.zoomed = false;
                 self.session_dirty = true;
+                self.emit_event(
+                    "pane.created",
+                    serde_json::json!({"pane": id.0.to_string()}),
+                );
                 Some(id)
             }
             Err(_) => None,
@@ -445,6 +478,8 @@ impl App {
                 layout: TileLayout::new(id),
             });
             ws.active_tab = ws.tabs.len() - 1;
+            let tab = self.ws().active_tab + 1;
+            self.emit_event("tab.created", serde_json::json!({"tab": tab.to_string()}));
         }
     }
 
@@ -464,6 +499,11 @@ impl App {
                 active_tab: 0,
             });
             self.active_ws = self.workspaces.len() - 1;
+            let node = self.active_ws;
+            self.emit_event(
+                "node.created",
+                serde_json::json!({"node": node.to_string()}),
+            );
         }
     }
 
@@ -636,10 +676,12 @@ impl App {
     fn close_pane(&mut self, id: PaneId) {
         self.panes.remove(&id);
         self.status.remove(&id);
+        self.module_panes.remove(&id); // untrack a module pane (MOD-2)
         self.session_dirty = true;
         if self.layout_mut().remove(id) {
             self.close_active_tab();
         }
+        self.emit_event("pane.closed", serde_json::json!({"pane": id.0.to_string()}));
     }
 
     fn close_active_tab(&mut self) {
@@ -678,6 +720,7 @@ impl App {
         for id in ids {
             self.panes.remove(&id);
             self.status.remove(&id);
+            self.module_panes.remove(&id);
         }
         self.workspaces.remove(index);
         if self.workspaces.is_empty() {
@@ -686,6 +729,10 @@ impl App {
             self.active_ws = self.workspaces.len() - 1;
         }
         self.session_dirty = true;
+        self.emit_event(
+            "node.closed",
+            serde_json::json!({"node": index.to_string()}),
+        );
     }
 
     /// Close a tab and all its panes (the "X" button / prefix+X).
@@ -700,6 +747,7 @@ impl App {
         for id in ids {
             self.panes.remove(&id);
             self.status.remove(&id);
+            self.module_panes.remove(&id);
         }
         let ws = &mut self.workspaces[self.active_ws];
         ws.tabs.remove(index);
@@ -711,6 +759,10 @@ impl App {
             ws.active_tab -= 1;
         }
         self.session_dirty = true;
+        self.emit_event(
+            "tab.closed",
+            serde_json::json!({"tab": (index + 1).to_string()}),
+        );
     }
 }
 
@@ -719,6 +771,35 @@ fn ws_name(cwd: &std::path::Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("workspace")
         .to_string()
+}
+
+/// Re-spawn a saved module pane if its module is still installed + runnable;
+/// returns the pane + its tracking record, or `None` to fall back to a shell.
+fn restore_module_pane(
+    modules: &crate::module::ModuleRegistry,
+    mid: &str,
+    ep: &str,
+    id: PaneId,
+    app_tx: &Sender<AppEvent>,
+) -> Option<(Pane, crate::module::ModulePaneRecord)> {
+    let m = modules.find(mid).filter(|m| m.is_runnable())?;
+    let argv = m
+        .manifest
+        .panes
+        .iter()
+        .find(|p| p.id == ep)
+        .map(|p| p.command.clone())?;
+    let ctx = serde_json::json!({ "invocation_source": "restore" });
+    let mut env = crate::module::runtime::base_env(m, &ctx);
+    env.push(("BOHAY_MODULE_ENTRYPOINT_ID".to_string(), ep.to_string()));
+    let pane = Pane::spawn_command(id, 80, 24, m.root.clone(), app_tx.clone(), &argv, &env).ok()?;
+    Some((
+        pane,
+        crate::module::ModulePaneRecord {
+            module_id: mid.to_string(),
+            entrypoint: ep.to_string(),
+        },
+    ))
 }
 
 /// The current git branch for `cwd`, if it's inside a repo. Reads `.git/HEAD`
@@ -755,9 +836,7 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
-    /// Serializes tests that mutate the global `BOHAY_HOME` env + config files,
-    /// so they don't race on each other's config I/O.
-    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::persist::TEST_ENV_LOCK as ENV_GUARD;
 
     fn key(c: char, m: KeyModifiers) -> AppEvent {
         AppEvent::Key(KeyEvent::new(KeyCode::Char(c), m))

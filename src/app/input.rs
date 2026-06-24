@@ -20,6 +20,12 @@ impl App {
                 }
             }
             AppEvent::PtyExit(id) => self.close_pane(id),
+            AppEvent::ModuleCommandFinished {
+                log_id,
+                code,
+                out,
+                err,
+            } => self.module_command_finished(log_id, code, out, err),
             // Handled by the server loop; never reaches here at runtime.
             AppEvent::ClientConnected { .. } | AppEvent::ClientDetach { .. } => {}
         }
