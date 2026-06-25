@@ -1,28 +1,6 @@
 # bohay
 
-**A terminal workspace manager for AI coding agents.**
-
-bohay is a client/server terminal multiplexer that runs inside your existing terminal as a
-single static Rust binary. It gives you persistent panes, tabs, and workspaces that survive
-detach; a live sidebar showing every agent's state (blocked / working / done / idle); a
-mouse-native split/resize UI; agent session resume; a built-in **git tab** (click a branch for
-PRs, issues, branches, the commit flow, and a repo overview); **git worktrees as nodes**;
-**remote sessions over plain SSH**; an agent API to **`wait`** on output/status and **`attach`**
-into one pane; **static workspaces** opened via a folder picker; fully **remappable keybindings**
-(arrows + a `?` cheat-sheet); a tabbed settings menu (themes, notifications, layout, keys); an
-extension system (**modules**); and a local socket API that lets the agents themselves drive the
-multiplexer.
-
-```
-┌ NODES ─────────────┐ │  1    ✕   +
-│ ● bohay     main    │ ┏ ● ~/bohay ━━━━━━━━ × ┓ ┏ ● ~/bohay ━━━━━━━━┓
-│   ~/skyrizz/bohay   │ ┃ $ claude              ┃ ┃ $ cargo test       ┃
-│                     │ ┃ › working…            ┃ ┃ running 20 tests   ┃
-├ AGENTS ─────────────┤ ┃                       ┃ ┃                    ┃
-│ ● working  claude   │ ┗━━━━━━━━━━━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━━━━━━━━━┛
-│   bohay · tab 1     │
-└─────────────────────┘ ⌃Space prefix   v split → s split ↓ x close   NORMAL · 2 panes
-```
+**Terminal Workspace Manager for Next-Gen Agents.**
 
 ## Why
 
@@ -87,8 +65,7 @@ it before it reaches the app. If the prefix seems dead, turn that off in **Setti
 language → Typing → Advanced keyboard settings → Input language hot keys**.
 
 One other thing differs on Windows: `bohay integration install` (the bash hook) is a no-op —
-but **agent session resume still works** (it reads the agents' own session files). See
-[`docs/16-windows-support.md`](docs/16-windows-support.md).
+but **agent session resume still works** (it reads the agents' own session files).
 
 ## Quick start
 
@@ -236,7 +213,7 @@ bohay worktree remove ~/.bohay/worktrees/myapp/feature-login  # remove it (the b
 A **module** is a shareable directory with a `bohay-module.toml` manifest that declares
 *commands* (argv arrays, run without a shell). bohay runs them as subprocesses with the focused
 node/tab/pane injected as `BOHAY_*` env, and they call back through the same socket API as the
-CLI — no SDK, no scripting runtime, any language. (Modeled on the docs/13 spec.)
+CLI — no SDK, no scripting runtime, any language.
 
 ```bash
 bohay module search [query]            # discover modules tagged `bohay-module` on GitHub
@@ -271,8 +248,8 @@ command = ["sh", "-c", "echo updated $BOHAY_MODULE_CONTEXT_JSON"]
 **Writing a module:** see the [module author's guide](MODULE-GUIDE.md) for the full
 manifest reference, the injected `BOHAY_*` environment, the context blob, and a worked example.
 
-Actions, panes, event hooks, local/GitHub install, and GitHub-topic discovery all ship today
-(docs/13). Only an optional hosted marketplace is left — install never needs it.
+Actions, panes, event hooks, local/GitHub install, and GitHub-topic discovery all ship today.
+Only an optional hosted marketplace is left — install never needs it.
 
 ## Git & GitHub (the git tab)
 
@@ -296,8 +273,7 @@ reopened session restores the dashboard for any node that's still a repo and re-
 
 Local git is read directly; GitHub data comes from the **`gh` CLI** (`gh pr list` etc.) — **no
 HTTP dependency**, and it degrades to a local-git viewer when `gh` isn't installed/authenticated.
-Agents can read it too: `bohay git status | branches | log`, `bohay git open`. See
-[`docs/17-git-integration.md`](docs/17-git-integration.md).
+Agents can read it too: `bohay git status | branches | log`, `bohay git open`.
 
 ## Agent session resume
 
@@ -362,7 +338,7 @@ State lives in **`~/.bohay/`** (debug builds use `~/.bohay-dev/`). Override the 
 `Ctrl+Space` then `,`): theme, sidebar width + pane gaps, notifications, the new-pane shell
 (Windows), agent integrations, and module enable/disable. Changes apply live and persist to
 `config.json`. The sidebar is also adjustable from the CLI — `bohay ui sidebar --width <n>`
-(18–44) or `--hide|--show`. See `docs/15-settings-menu.md`.
+(18–44) or `--hide|--show`.
 
 ## Architecture
 
@@ -388,7 +364,7 @@ src/
     status.rs          bottom status line
     settings.rs        the tabbed Settings modal
     theme.rs           color palettes (noir, ocean, dracula, nord, sunset, homebrew, grass, red sands, latte, mono)
-  module/            extension system (docs/13): manifest, registry, paths,
+  module/            extension system: manifest, registry, paths,
                      context, runtime, install, discovery
   terminal/          PTY actor (pty) + pure-Rust VT engine (vt/)
   ipc/               Unix-socket layer: control api, frame protocol, client, server
@@ -400,9 +376,6 @@ src/
   platform.rs        OS-specific bits (cwd, shell resolution)
   integration.rs     agent integration hooks
 ```
-
-The `docs/` directory contains the full design notes (architecture, data model, terminal
-handling, the socket API, persistence, and the execution plan).
 
 ## Development
 
