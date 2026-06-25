@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub use github::GhState;
 pub use model::Checks;
 pub use model::WorktreeMembership;
-use model::{BranchInfo, Commit, Issue, PullRequest, RepoInfo, RepoStatus};
+use model::{BranchInfo, Commit, Issue, PrDetail, PullRequest, RepoInfo, RepoStatus};
 
 /// Which section of the git tab is shown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -111,6 +111,8 @@ pub enum GitPayload {
     Gh(GhState),
     Prs(Result<Vec<PullRequest>, String>),
     Issues(Result<Vec<Issue>, String>),
+    // Boxed: `PrDetail` is large and would bloat every `AppEvent`.
+    PrDetail(Box<Result<PrDetail, String>>),
 }
 
 fn next_id() -> u64 {
@@ -140,6 +142,9 @@ pub struct GitView {
     pub issues: Load<Vec<Issue>>,
     /// Last-seen CI state per PR, to notify only on a *transition* to failing.
     pub prev_pr_checks: HashMap<u64, Checks>,
+    /// The open PR detail panel (`Some(number)` ⇒ the panel is showing that PR).
+    pub open_pr: Option<u64>,
+    pub detail: Load<PrDetail>,
 }
 
 impl GitView {
@@ -168,6 +173,8 @@ impl GitView {
             prs: Load::Idle,
             issues: Load::Idle,
             prev_pr_checks: HashMap::new(),
+            open_pr: None,
+            detail: Load::Idle,
         }
     }
 
@@ -191,6 +198,13 @@ impl GitView {
             }
             GitPayload::Prs(r) => self.prs = into_load(r),
             GitPayload::Issues(r) => self.issues = into_load(r),
+            // Only apply detail if the panel is still open (it may have closed
+            // while the fetch was in flight).
+            GitPayload::PrDetail(r) => {
+                if self.open_pr.is_some() {
+                    self.detail = into_load(*r);
+                }
+            }
         }
     }
 }
