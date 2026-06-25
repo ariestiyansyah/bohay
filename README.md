@@ -6,9 +6,10 @@ bohay is a client/server terminal multiplexer that runs inside your existing ter
 single static Rust binary. It gives you persistent panes, tabs, and workspaces that survive
 detach; a live sidebar showing every agent's state (blocked / working / done / idle); a
 mouse-native split/resize UI; agent session resume; a built-in **git tab** (click a branch for
-PRs, issues, branches, the commit flow, and a repo overview); a tabbed settings menu (themes,
-notifications, layout); an extension system (**modules**); and a local socket API that lets
-the agents themselves drive the multiplexer.
+PRs, issues, branches, the commit flow, and a repo overview); **static workspaces** opened via a
+folder picker; fully **remappable keybindings** (arrows + a `?` cheat-sheet); a tabbed settings
+menu (themes, notifications, layout, keys); an extension system (**modules**); and a local socket
+API that lets the agents themselves drive the multiplexer.
 
 ```
 ┌ NODES ─────────────┐ │  1    ✕   +
@@ -83,8 +84,7 @@ languages installed, Windows itself binds `Ctrl+Space` to "switch input method" 
 it before it reaches the app. If the prefix seems dead, turn that off in **Settings → Time &
 language → Typing → Advanced keyboard settings → Input language hot keys**.
 
-Two other things differ on Windows: a node's directory doesn't follow `cd` inside its pane (it
-stays where the pane was opened), and `bohay integration install` (the bash hook) is a no-op —
+One other thing differs on Windows: `bohay integration install` (the bash hook) is a no-op —
 but **agent session resume still works** (it reads the agents' own session files). See
 [`docs/16-windows-support.md`](docs/16-windows-support.md).
 
@@ -104,23 +104,41 @@ All commands are prefixed with **`Ctrl+Space`** (press it, then the key):
 
 | Key | Action | Key | Action |
 |-----|--------|-----|--------|
-| `v` | split right (vertical divider) | `c` | new tab |
-| `s` / `-` | split down (horizontal divider) | `n` / `p` | next / previous tab |
-| `x` / `X` | close the focused pane | `1`–`9` | jump to tab _n_ |
-| `z` | zoom the focused pane | `N` | new node (workspace) |
-| `h` `j` `k` `l` | move focus between panes | `D` | close the current node |
-| `b` | toggle the sidebar | `w` | cycle to the next node |
+| `←` `↓` `↑` `→` | move focus between panes (or `h` `j` `k` `l`) | `c` | new tab |
+| `v` | split right (vertical divider) | `n` / `p` / `⇥` | next / previous tab |
+| `s` / `-` | split down (horizontal divider) | `1`–`9` | jump to tab _n_ |
+| `x` / `X` | close the focused pane (or the git tab) | `N` | new node — pick a folder |
+| `z` | zoom the focused pane | `D` | close the current node |
+| `b` | toggle the sidebar | `w` / `W` | next / previous node |
+| `g` | open the git tab | `a` | agents: all / active |
 | `q` / `d` | detach (leave the server running) | `,` | open Settings |
 
 Pressing `Ctrl+Space` twice sends a literal `Ctrl+Space` to the focused program. The UI is
 also fully mouse-driven — click tabs, nodes, agents, panes, the `+`/`✕` buttons, and scroll.
 
+Press the prefix and the status bar shows what the next key does; **`Ctrl+Space ?`** opens a
+full cheat-sheet of every shortcut (any key closes it). Note `c` = **new** tab while `n` / `p` =
+next / previous tab. The command key works whether you release `Ctrl` after the prefix
+(`Ctrl+Space` then `c`) or keep it held as a fast chord (`Ctrl+Space`+`Ctrl+c`).
+
+**Every shortcut is remappable.** Settings → **Keys** lists all commands with their current key:
+select one, press `⏎`, then press the key you want (`⌫` resets to default). Bindings persist to
+`~/.bohay/config.json`. The vim-style `h` `j` `k` `l` aliases stay available alongside the arrows.
+
+**Nodes are static workspaces.** A node (in the NODES list) is a fixed project folder — its
+directory and name don't change when you `cd` inside a pane. Add one with the **`+`** button (or
+`Ctrl+Space N`): a folder picker opens to **browse and choose an existing folder, or create a new
+one** (`n`). It lists folders **and files** (files are dimmed, so you can see what a folder holds)
+and scrolls with the **mouse wheel** or `↑↓`/`j``k`. `⏎` opens the highlighted folder / descends ·
+`←` up · `esc` cancel. New tabs open at the node's folder (not wherever a pane has `cd`'d).
+
 **Settings** — click the **Menu** button at the top of the sidebar (or `Ctrl+Space` then `,`) for a tabbed
 dialog: **Theme** (10 palettes — noir, ocean, dracula, nord, sunset, homebrew, grass, red sands, latte, mono — with live preview), **Layout** (sidebar width, gaps, pane
 titles, resume placement; **on Windows**, also a **Shell** picker — PowerShell / Command
 Prompt — for new panes), **Notifications** (a silent desktop notification — no terminal bell —
-when an agent gets blocked or finishes, with a **Test notification** button), **Modules** (enable /
-disable installed modules), and **Agents** (install the resume hook). Changes apply instantly and persist to
+when an agent gets blocked or finishes, with a **Test notification** button), **Keys** (view and
+rebind every keyboard shortcut), **Modules** (enable / disable installed modules), and **Agents**
+(install the resume hook). Changes apply instantly and persist to
 `~/.bohay/config.json`. `↑↓` move, `⇥` switch tab, `←→` adjust, `⏎` apply, `esc` close.
 
 ## CLI
@@ -213,7 +231,10 @@ tab**, `1`–`6`, or `Tab`:
 - **Status** — a repo overview (remote URL, `owner/repo`, commit count, age, **contributor list**
   with commit bars) plus the working tree (staged / changed / untracked / stashes).
 - `j/k` move · `/` filter · `⏎` checkout/show · `d` diff · `o` open on GitHub · `c` create PR ·
-  `m` toggle *this repo ↔ my work* (cross-repo) · `r` refresh · `q` close.
+  `m` toggle *this repo ↔ my work* (cross-repo) · `r` refresh · `q` (or `Ctrl+Space x`) close.
+
+Every list view **scrolls** with the wheel or `j`/`k`. Git tabs **persist across restart** — a
+reopened session restores the dashboard for any node that's still a repo and re-fetches its data.
 
 Local git is read directly; GitHub data comes from the **`gh` CLI** (`gh pr list` etc.) — **no
 HTTP dependency**, and it degrades to a local-git viewer when `gh` isn't installed/authenticated.
