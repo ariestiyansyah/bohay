@@ -1,13 +1,18 @@
 # bohay
 
+<div align="center">
+
+<img src="assets/logo.png" alt="bohay logo" width="116" />
+
 **Next-Gen Agents Multiplexer** — a terminal multiplexer built for AI coding agents.
 
-[![ci](https://github.com/RizRiyz/bohay/actions/workflows/ci.yml/badge.svg)](https://github.com/RizRiyz/bohay/actions/workflows/ci.yml)
-![license](https://img.shields.io/badge/license-MIT-blue.svg)
-![platforms](https://img.shields.io/badge/platforms-macOS%20·%20Linux%20·%20Windows-lightgrey.svg)
+[![ci](https://github.com/RizRiyz/bohay/actions/workflows/ci.yml/badge.svg)](https://github.com/RizRiyz/bohay/actions/workflows/ci.yml) &nbsp;![license](https://img.shields.io/badge/license-MIT-blue.svg) &nbsp;![platforms](https://img.shields.io/badge/platforms-macOS%20·%20Linux%20·%20Windows-lightgrey.svg)
 
-Persistent panes that survive detach, a live sidebar of every agent's state, zero-config session
-resume, a built-in git dashboard, and a socket API the agents themselves can drive.
+<br />
+
+<img src="assets/screenshot.png" alt="bohay — panes, a live agent sidebar, and a built-in git dashboard in one terminal" width="820" />
+
+</div>
 
 ## Features
 
