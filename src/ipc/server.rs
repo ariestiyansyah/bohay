@@ -252,10 +252,7 @@ fn start_client_listener(path: PathBuf, app_tx: Sender<AppEvent>) {
         Err(_) => return,
     };
     thread::spawn(move || {
-        let mut next_id = 1u64;
-        for stream in transport::incoming(&listener) {
-            let id = next_id;
-            next_id += 1;
+        for (id, stream) in (1u64..).zip(transport::incoming(&listener)) {
             let app_tx = app_tx.clone();
             thread::spawn(move || handle_client(id, stream, app_tx));
         }

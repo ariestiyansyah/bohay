@@ -318,10 +318,8 @@ fn draw_pr_detail(f: &mut Frame, area: Rect, g: &GitView, cat: &Catalog, t: &The
     // Render from the top with the scroll offset.
     let avail = area.height as usize;
     let scroll = g.scroll.min(rows.len().saturating_sub(avail));
-    let mut y = area.y;
-    for line in rows.into_iter().skip(scroll).take(avail) {
+    for (y, line) in (area.y..).zip(rows.into_iter().skip(scroll).take(avail)) {
         f.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
-        y += 1;
     }
     scroll
 }
@@ -507,10 +505,8 @@ fn draw_flow(f: &mut Frame, area: Rect, g: &GitView, cat: &Catalog, t: &Theme) -
     let legend_y = area.bottom().saturating_sub(1);
     let chart_h = legend_y.saturating_sub(area.y) as usize;
     let scroll = g.scroll.min(rows.len().saturating_sub(chart_h));
-    let mut y = area.y;
-    for line in rows.into_iter().skip(scroll).take(chart_h) {
+    for (y, line) in (area.y..).zip(rows.into_iter().skip(scroll).take(chart_h)) {
         f.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
-        y += 1;
     }
     f.render_widget(
         Paragraph::new(Span::styled(
@@ -903,10 +899,8 @@ fn draw_status(f: &mut Frame, area: Rect, g: &GitView, cat: &Catalog, t: &Theme)
     // Status isn't row-selectable; render from the top with the scroll offset.
     let avail = area.height as usize;
     let scroll = g.scroll.min(rows.len().saturating_sub(avail));
-    let mut y = area.y;
-    for line in rows.into_iter().skip(scroll).take(avail) {
+    for (y, line) in (area.y..).zip(rows.into_iter().skip(scroll).take(avail)) {
         f.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
-        y += 1;
     }
     scroll
 }

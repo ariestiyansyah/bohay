@@ -32,7 +32,7 @@ pub struct SessionInfo {
 pub fn recent_sessions(limit: usize) -> Vec<SessionInfo> {
     let mut out = claude_recent(&claude_base(), limit);
     out.extend(copilot_recent(&copilot_base(), limit));
-    out.sort_by(|a, b| b.updated.cmp(&a.updated));
+    out.sort_by_key(|s| std::cmp::Reverse(s.updated));
     let mut seen = std::collections::HashSet::new();
     out.retain(|s| seen.insert((s.agent.clone(), s.cwd.clone())));
     out.truncate(limit);
@@ -176,7 +176,7 @@ fn claude_recent(base: &Path, limit: usize) -> Vec<SessionInfo> {
             md.is_dir().then(|| Some((md.modified().ok()?, e.path())))?
         })
         .collect();
-    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.0));
     dirs.truncate(limit);
     dirs.into_iter()
         .filter_map(|(_, dir)| {
@@ -205,7 +205,7 @@ fn copilot_latest(base: &Path, cwd: &Path) -> Option<String> {
         .flatten()
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
-    sessions.sort_by(|a, b| b.0.cmp(&a.0));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.0));
     for (_, path) in sessions {
         let Ok(text) = std::fs::read_to_string(path.join("workspace.yaml")) else {
             continue;
@@ -236,7 +236,7 @@ fn copilot_recent(base: &Path, limit: usize) -> Vec<SessionInfo> {
         .flatten()
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
-    sessions.sort_by(|a, b| b.0.cmp(&a.0));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.0));
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for (updated, path) in sessions {

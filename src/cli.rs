@@ -25,6 +25,7 @@ pub fn is_cli(args: &[String]) -> bool {
                 | "worktree"
                 | "wait"
                 | "help"
+                | "doctor"
         )
     )
 }
@@ -36,6 +37,7 @@ usage: bohay <command> [args]
 
   (no args)            launch / attach the TUI
   help                 show this help
+  doctor               check optional external tools (git, gh, …)
   ping                 check the server
 
 nodes (spaces):
@@ -113,6 +115,10 @@ pub fn run(args: &[String]) -> Result<i32> {
     if args.get(1).map(String::as_str) == Some("help") {
         print!("{USAGE}");
         return Ok(0);
+    }
+    // `doctor` is a local environment check — no server needed.
+    if args.get(1).map(String::as_str) == Some("doctor") {
+        return Ok(doctor());
     }
     // `module install` clones + builds locally (with a confirm prompt), then
     // registers over the socket — it isn't a plain request/response.
@@ -208,6 +214,98 @@ fn module_install(args: &[String]) -> Result<i32> {
             Ok(0)
         }
     }
+}
+
+/// `bohay doctor` — report which optional external tools are present. The core
+/// multiplexer needs none of them; this just tells a fresh install (esp. via
+/// `cargo install`, which can't pull in system tools) what each missing tool
+/// would unlock and how to get it. Always exits 0 — nothing here is fatal.
+fn doctor() -> i32 {
+    use std::process::Command;
+    // Run `<cmd> <arg>` and return its first non-empty version line, if it runs.
+    let probe = |cmd: &str, arg: &str| -> Option<String> {
+        let out = Command::new(cmd).arg(arg).output().ok()?;
+        let bytes = if !out.stdout.is_empty() {
+            out.stdout
+        } else {
+            out.stderr // ssh prints its version to stderr
+        };
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+    };
+
+    println!("bohay {}\n", env!("CARGO_PKG_VERSION"));
+    println!("  ✓ core    the multiplexer (panes · tabs · agents) needs no external tools\n");
+
+    // (name, cmd, version-arg, what it unlocks, required?, install hint)
+    let tools = [
+        (
+            "git",
+            "git",
+            "--version",
+            "git tab · worktrees",
+            true,
+            "https://git-scm.com  (brew install git)",
+        ),
+        (
+            "gh",
+            "gh",
+            "--version",
+            "GitHub PRs & issues",
+            false,
+            "https://cli.github.com  (brew install gh)",
+        ),
+        (
+            "ssh",
+            "ssh",
+            "-V",
+            "bohay --remote",
+            false,
+            "preinstalled on macOS/Linux",
+        ),
+        (
+            "curl",
+            "curl",
+            "--version",
+            "bohay module search",
+            false,
+            "preinstalled on macOS/Linux",
+        ),
+    ];
+
+    let mut missing_git = false;
+    for (name, cmd, arg, unlocks, required, hint) in tools {
+        match probe(cmd, arg) {
+            Some(ver) => {
+                // Trim noisy version banners (e.g. curl's) to keep it scannable.
+                let short: String = ver.chars().take(26).collect();
+                println!("  ✓ {name:<6}{short:<28}{unlocks}");
+            }
+            None => {
+                if required {
+                    missing_git = true;
+                }
+                let kind = if required {
+                    "needed for"
+                } else {
+                    "optional —"
+                };
+                println!("  ✗ {name:<6}not found · {kind} {unlocks}");
+                println!("           ↳ {hint}");
+            }
+        }
+    }
+
+    println!();
+    if missing_git {
+        println!("Tip: install `git` to use the git tab & worktrees. Everything else works now.");
+    } else {
+        println!("All set — you're good to go. ✓");
+    }
+    0
 }
 
 /// `bohay module search [<query>]` — list modules published to the

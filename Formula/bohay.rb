@@ -7,7 +7,7 @@
 # below to the tag tarball's checksum:
 #   curl -sL https://github.com/RizRiyz/bohay/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
 class Bohay < Formula
-  desc "Terminal Workspace Manager for Next-Gen Agents — single-binary terminal multiplexer"
+  desc "Terminal multiplexer for AI coding agents"
   homepage "https://github.com/RizRiyz/bohay"
   url "https://github.com/RizRiyz/bohay/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
@@ -15,6 +15,11 @@ class Bohay < Formula
   head "https://github.com/RizRiyz/bohay.git", branch: "main"
 
   depends_on "rust" => :build
+  # Runtime tools bohay shells out to. `git` powers the git tab + worktrees; `gh`
+  # adds GitHub PRs/issues (bohay still works as a local-git viewer without it).
+  # (For a homebrew-core submission, drop `git` — core assumes a system git.)
+  depends_on "git"
+  depends_on "gh"
 
   def install
     system "cargo", "install", *std_cargo_args

@@ -57,11 +57,9 @@ fn draw_scrollbar(f: &mut Frame, track: Rect, total: usize, cap: usize, scroll: 
     let len = track.height as usize;
     let thumb = (len * cap / total).clamp(1, len);
     let span = total - cap;
-    let pos = if span == 0 {
-        0
-    } else {
-        (len - thumb) * scroll.min(span) / span
-    };
+    let pos = ((len - thumb) * scroll.min(span))
+        .checked_div(span)
+        .unwrap_or(0);
     let buf = f.buffer_mut();
     for i in 0..len {
         let on = i >= pos && i < pos + thumb;
