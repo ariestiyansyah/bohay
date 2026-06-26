@@ -19,13 +19,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Create the GitHub Release for this tag
+        with:
+          fetch-depth: 0 # full history + tags so the changelog can diff versions
+      - name: Generate notes + create/update the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                 --title "$GITHUB_REF_NAME" --generate-notes
+          bash scripts/changelog.sh "$GITHUB_REF_NAME" > notes.md
+          echo "----- release notes -----"; cat notes.md; echo "-------------------------"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" --notes-file notes.md
+          fi
 
   upload:
     name: ${{ matrix.target }}
