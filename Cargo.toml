@@ -16,7 +16,6 @@ categories = ["command-line-utilities", "development-tools"]
 exclude = [
     "/docs",
     "/.github",
-    "/Formula",
     "/preview.html",
     "/preview.ans",
     "/MODULE-GUIDE.md",

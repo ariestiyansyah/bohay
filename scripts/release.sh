@@ -98,13 +98,8 @@ SHA=$(curl -fsSL --retry 5 --retry-delay 2 "$TARBALL" | sha256)
 [ -n "$SHA" ] || die "could not fetch + hash $TARBALL"
 echo "  sha256: $SHA"
 
-# Keep the in-repo reference copy current (committed to main).
-bump_formula Formula/bohay.rb
-git add Formula/bohay.rb
-git commit -m "homebrew: $TAG"
-git push origin main
+# The tap (its own repo) is the single source of truth — `brew install` pulls it.
 
-# Bump the real tap (its own repo) — this is what `brew install` pulls.
 if [ -f "$TAP/Formula/bohay.rb" ]; then
   step "Update tap ($TAP)"
   bump_formula "$TAP/Formula/bohay.rb"
